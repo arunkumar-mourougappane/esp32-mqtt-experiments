@@ -1,0 +1,7 @@
+.pio
+include/secrets.h
+include/mqtt_creds.h
+include/ca_cert.h
+.wifi-env
+broker/certs/
+broker/passwd
