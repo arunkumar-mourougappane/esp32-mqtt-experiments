@@ -1,0 +1,615 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tab5 Dashboard</title>
+<style>
+  /* Tokens: validated reference palette. Series slots 1-3 = X, Y, Z everywhere. */
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb;
+    --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --hair: rgba(11,11,11,.10); --wash: rgba(11,11,11,.06);
+    --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a;
+    --track: #cde2fb; --fill: #2a78d6;
+    --good: #0ca30c; --warn: #fab219; --crit: #d03b3b;
+    --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface: #1a1a19;
+      --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835; --hair: rgba(255,255,255,.10); --wash: rgba(255,255,255,.08);
+      --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+      --track: #0d366b; --fill: #3987e5;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19;
+    --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --hair: rgba(255,255,255,.10); --wash: rgba(255,255,255,.08);
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+    --track: #0d366b; --fill: #3987e5;
+  }
+
+  * { box-sizing: border-box; }
+  html { background: var(--page); }
+  body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 var(--font); }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  :focus-visible { outline: 2px solid var(--s1); outline-offset: 2px; border-radius: 4px; }
+
+  .app { display: grid; grid-template-columns: 330px minmax(0, 1fr); min-height: 100vh; }
+
+  /* ---- device rail ---- */
+  .rail { position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto;
+          padding: 22px 22px 28px; border-right: 1px solid var(--hair); display: flex; flex-direction: column; gap: 22px; }
+  .brand { display: flex; align-items: baseline; justify-content: space-between; }
+  .brand h1 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: -.01em; }
+  .link { background: none; border: 0; padding: 2px 4px; color: var(--ink-2); font-size: 13px; }
+  .link:hover { color: var(--ink); background: var(--wash); border-radius: 4px; }
+
+  .status { display: grid; gap: 4px; font-size: 13px; color: var(--ink-2); }
+  .status div { display: flex; gap: 8px; align-items: baseline; }
+  .glyph { width: 14px; text-align: center; font-weight: 700; flex: none; }
+  .ok { color: var(--good); } .bad { color: var(--crit); } .wait { color: var(--warn); }
+
+  .hero .lbl { color: var(--ink-2); font-size: 13px; }
+  .hero .num { font-size: 56px; line-height: 1.05; font-weight: 620; letter-spacing: -.02em; margin: 2px 0 4px; }
+  .hero .num small { font-size: 22px; font-weight: 500; color: var(--ink-2); margin-left: 4px; letter-spacing: 0; }
+  .hero .state { font-size: 14px; color: var(--ink-2); display: flex; gap: 6px; }
+
+  .meter { margin-top: 14px; }
+  .meter .row { display: flex; justify-content: space-between; font-size: 13px; color: var(--ink-2); margin-bottom: 5px; }
+  .meter .row b { color: var(--ink); font-weight: 600; }
+  .bar { height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; }
+  .bar i { display: block; height: 100%; border-radius: 4px; background: var(--fill); width: 0; }
+  .bar i.low { background: var(--warn); } .bar i.crit { background: var(--crit); }
+
+  dl.vitals { margin: 0; display: grid; grid-template-columns: 1fr auto; row-gap: 7px; font-size: 14px; }
+  dl.vitals dt { color: var(--ink-2); }
+  dl.vitals dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; font-weight: 550; }
+  dl.vitals hr { grid-column: 1 / -1; width: 100%; border: 0; border-top: 1px solid var(--hair); margin: 4px 0; }
+
+  .note { margin: -8px 0 0; color: var(--muted); font-size: 12px; max-width: 34ch; }
+  input[type=range] { width: 100%; accent-color: var(--s1); margin: 2px 0 0; }
+  .screen h2 { margin: 0 0 8px; font-size: 14px; font-weight: 650; }
+  .screen .meter { margin-top: 12px; }
+  .mic h2 { margin: 0 0 8px; font-size: 14px; font-weight: 650; }
+  .mic p { margin: 8px 0 0; color: var(--muted); font-size: 12px; max-width: 30ch; }
+  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 8px 16px; border-radius: 8px;
+         border: 1px solid var(--hair); background: var(--wash); font-weight: 600; }
+  .btn:hover { border-color: var(--axis); }
+  .btn.live { border-color: var(--crit); }
+  .btn.live .glyph { color: var(--crit); }
+  .mic .meter { margin-top: 12px; }
+
+  /* ---- chart sheet ---- */
+  main { background: var(--surface); padding: 20px 32px 48px; min-width: 0; }
+  .filters { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; padding-bottom: 14px; border-bottom: 1px solid var(--hair); }
+  .filters .grp { display: flex; align-items: center; gap: 10px; color: var(--ink-2); font-size: 13px; }
+  .seg { display: inline-flex; border: 1px solid var(--hair); border-radius: 8px; overflow: hidden; }
+  .seg button { background: none; border: 0; padding: 5px 12px; color: var(--ink-2); }
+  .seg button + button { border-left: 1px solid var(--hair); }
+  .seg button[aria-pressed="true"] { background: var(--wash); color: var(--ink); font-weight: 650; }
+  .spacer { flex: 1; }
+
+  section.sheet { padding: 22px 0 6px; border-bottom: 1px solid var(--hair); }
+  section.sheet:last-of-type { border-bottom: 0; }
+  .sh { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 8px; }
+  .sh h2 { margin: 0; font-size: 16px; font-weight: 650; }
+  .sh p { margin: 0; color: var(--muted); font-size: 13px; }
+  .keys { display: flex; gap: 16px; margin-left: auto; font-size: 13px; color: var(--ink-2); }
+  .keys span { display: inline-flex; align-items: center; gap: 6px; }
+  .keys i { width: 14px; height: 2px; border-radius: 1px; display: inline-block; }
+
+  .split { display: grid; grid-template-columns: 330px minmax(0, 1fr); gap: 28px; align-items: start; }
+  .col { min-width: 0; }
+  canvas { width: 100%; display: block; }
+  canvas.chart { height: 230px; }
+  canvas.chart.short { height: 180px; }
+  canvas.chart.tall { height: 330px; }
+  #scope { aspect-ratio: 1 / 1; max-width: 330px; }
+  #dials { height: 170px; }
+  .readrow { display: flex; gap: 18px; margin-top: 6px; font-size: 14px; font-variant-numeric: tabular-nums; flex-wrap: wrap; }
+  .readrow span { display: inline-flex; align-items: center; gap: 6px; }
+  .readrow i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+
+  .tables .chartwrap { display: none; }
+  .tablewrap { display: none; }
+  .tables .tablewrap { display: block; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 5px 10px; border-bottom: 1px solid var(--hair); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--ink-2); font-weight: 600; }
+
+  #tip { position: fixed; z-index: 10; pointer-events: none; background: var(--surface); color: var(--ink);
+         border: 1px solid var(--axis); border-radius: 8px; padding: 8px 10px; font-size: 13px; display: none; min-width: 120px; }
+  #tip .t { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+  #tip .r { display: flex; align-items: center; gap: 8px; font-variant-numeric: tabular-nums; }
+  #tip .r i { width: 10px; height: 2px; border-radius: 1px; flex: none; }
+  #tip .r b { font-weight: 650; margin-left: auto; padding-left: 10px; }
+  #tip .r span { color: var(--ink-2); }
+
+  @media (max-width: 1000px) {
+    .app { grid-template-columns: 1fr; }
+    .rail { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--hair); }
+    main { padding: 16px 16px 40px; }
+    .split { grid-template-columns: 1fr; }
+    #scope { margin: 0 auto; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="rail" aria-label="Device status">
+    <div class="brand">
+      <h1>Tab5</h1>
+      <button class="link" id="theme" title="Switch between automatic, light and dark">Theme: auto</button>
+    </div>
+
+    <div class="status" aria-live="polite">
+      <div><span class="glyph" id="g-broker">·</span><span id="t-broker">Connecting to the broker</span></div>
+      <div><span class="glyph" id="g-stream">·</span><span id="t-stream">Waiting for the Tab5</span></div>
+    </div>
+
+    <div class="hero">
+      <div class="lbl" id="hl">Battery power</div>
+      <div class="num"><span id="hp">–</span><small>W</small></div>
+      <div class="state"><span class="glyph" id="hs-g"></span><span id="hs">No data yet</span></div>
+      <div class="meter">
+        <div class="row"><span>Charge</span><b id="soc">–</b></div>
+        <div class="bar" role="meter" aria-label="Battery charge" aria-valuemin="0" aria-valuemax="100" id="socbar"><i id="socfill"></i></div>
+      </div>
+    </div>
+
+    <dl class="vitals">
+      <dt>Stored energy</dt><dd id="v-wh">–</dd>
+      <dt id="l-eta">Time left</dt><dd id="v-eta">–</dd>
+      <dt>Average power, 10 s</dt><dd id="v-avg">–</dd>
+      <hr>
+      <dt>Pack voltage</dt><dd id="v-v">–</dd>
+      <dt>Current</dt><dd id="v-i">–</dd>
+      <hr>
+      <dt>IMU temperature</dt><dd id="v-ti">–</dd>
+      <dt>Chip temperature</dt><dd id="v-tc">–</dd>
+      <dt>Wi-Fi signal</dt><dd id="v-rssi">–</dd>
+      <dt>Free memory</dt><dd id="v-heap">–</dd>
+      <hr>
+      <dt>Roll</dt><dd id="v-roll">–</dd>
+      <dt>Pitch</dt><dd id="v-pitch">–</dd>
+      <dt>Yaw (drifts)</dt><dd id="v-yaw">–</dd>
+    </dl>
+
+    <p class="note">Stored energy and time left are estimates. Charge comes from the pack voltage, which dips under load, and the capacity assumes the 2000 mAh NP-F550 pack.</p>
+
+    <div class="screen">
+      <h2>Screen</h2>
+      <button class="btn" id="scr"><span id="scr-t">Turn screen off</span></button>
+      <div class="meter">
+        <div class="row"><label for="bri">Brightness</label><b id="bri-v">–</b></div>
+        <input type="range" id="bri" min="5" max="100" step="1">
+      </div>
+    </div>
+
+    <div class="mic">
+      <h2>Microphone</h2>
+      <button class="btn" id="mic"><span class="glyph" aria-hidden="true">●</span><span id="mic-t">Listen</span></button>
+      <div class="meter">
+        <div class="row"><span>Level</span><b id="ml">Off</b></div>
+        <div class="bar" role="meter" aria-label="Microphone level" aria-valuemin="-90" aria-valuemax="0" id="mbar"><i id="mfill"></i></div>
+      </div>
+      <p id="mhint">The mic stays off until you press Listen. Audio plays here and isn't saved.</p>
+    </div>
+  </aside>
+
+  <main id="main">
+    <div class="filters">
+      <div class="grp"><span>History</span>
+        <div class="seg" id="win" role="group" aria-label="History window">
+          <button data-v="10">10 s</button><button data-v="30">30 s</button><button data-v="60">60 s</button>
+        </div>
+      </div>
+      <div class="grp"><span>Show</span>
+        <div class="seg" id="view" role="group" aria-label="Charts or tables">
+          <button data-v="charts">Charts</button><button data-v="tables">Tables</button>
+        </div>
+      </div>
+      <span class="spacer"></span>
+      <span class="grp" id="rate"></span>
+    </div>
+
+    <section class="sheet">
+      <div class="sh"><h2>Battery power</h2><p>Charging plots above the line, discharging below it. Measured at the battery, so it excludes power from USB.</p></div>
+      <div class="chartwrap"><canvas class="chart" id="c-power" tabindex="0" role="img" aria-label="Battery power over time"></canvas></div>
+      <div class="tablewrap"><table id="t-power"></table></div>
+    </section>
+
+    <section class="sheet">
+      <div class="sh"><h2>Acceleration</h2><p>Raw, with gravity. At rest the total is 1 g.</p>
+        <div class="keys" id="k-accel"></div></div>
+      <div class="split">
+        <div class="col">
+          <canvas id="scope" role="img" aria-label="Acceleration x and y as a position on a g-force scope"></canvas>
+          <div class="readrow" id="r-accel"></div>
+        </div>
+        <div class="col">
+          <div class="chartwrap"><canvas class="chart tall" id="c-accel" tabindex="0" role="img" aria-label="Acceleration over time"></canvas></div>
+          <div class="tablewrap"><table id="t-accel"></table></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="sheet">
+      <div class="sh"><h2>Rotation rate</h2><p>Degrees per second around each axis.</p>
+        <div class="keys" id="k-gyro"></div></div>
+      <div class="split">
+        <div class="col">
+          <canvas id="dials" role="img" aria-label="Rotation rate dials for x, y and z"></canvas>
+        </div>
+        <div class="col">
+          <div class="chartwrap"><canvas class="chart short" id="c-gyro" tabindex="0" role="img" aria-label="Rotation rate over time"></canvas></div>
+          <div class="tablewrap"><table id="t-gyro"></table></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+<div id="tip" role="status"></div>
+
+<script src="mqtt.min.js"></script>
+<script>
+"use strict";
+const URL_ = "ws://localhost:9001", T_IMU = "tab5/imu", T_PWR = "tab5/power", T_AUDIO = "tab5/audio", T_CMD = "tab5/cmd";
+const $ = id => document.getElementById(id);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const MINUS = "−";
+const sgn = (v, d) => { const s = Math.abs(v).toFixed(d); return (v < 0 && +s !== 0 ? MINUS : "+") + s; };
+const store = { get(k, d) { try { return localStorage.getItem(k) || d; } catch { return d; } },
+                set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
+
+// ---------- data ----------
+const imu = [], pwr = [];
+let pw = null, lastImu = null, imuRx = 0, pwrRx = 0, rxTimes = [], audioRx = [];
+
+function push(arr, m, keep) {
+  if (arr.length && m.t < arr[arr.length - 1].t - 2000) arr.length = 0;     // device rebooted
+  arr.push(m);
+  if (arr.length > keep + 300) arr.splice(0, 300);
+}
+
+// ---------- MQTT ----------
+const client = mqtt.connect(URL_, { reconnectPeriod: 2000 });
+client.on("connect", () => client.subscribe([T_IMU, T_PWR, T_AUDIO]));
+client.on("message", (topic, payload) => {
+  if (topic === T_AUDIO) return playAudio(payload);
+  let m; try { m = JSON.parse(payload.toString()); } catch { return; }
+  const now = performance.now();
+  if (topic === T_PWR) { pw = m; pwrRx = now; push(pwr, m, 700); }
+  else { lastImu = m; imuRx = now; rxTimes.push(now); push(imu, m, 3500); }
+});
+
+// ---------- microphone: on command, played through Web Audio ----------
+const RATE = 16000;
+let actx = null, nextT = 0, listening = false;
+$("mic").onclick = () => {
+  listening = !listening;
+  if (listening) { actx = actx || new AudioContext({ sampleRate: RATE }); actx.resume(); nextT = 0; }
+  client.publish(T_CMD, listening ? "mic on" : "mic off");
+  $("mic-t").textContent = listening ? "Stop listening" : "Listen";
+  $("mic").classList.toggle("live", listening);
+};
+addEventListener("beforeunload", () => { if (listening) client.publish(T_CMD, "mic off"); });
+function playAudio(payload) {
+  audioRx.push(performance.now());
+  if (!listening || !actx) return;
+  const n = payload.byteLength >> 1;
+  const i16 = new Int16Array(payload.buffer.slice(payload.byteOffset, payload.byteOffset + n * 2));
+  const ab = actx.createBuffer(1, n, RATE), ch = ab.getChannelData(0);
+  for (let i = 0; i < n; i++) ch[i] = i16[i] / 32768;
+  const src = actx.createBufferSource(); src.buffer = ab; src.connect(actx.destination);
+  if (nextT < actx.currentTime + 0.02) nextT = actx.currentTime + 0.15;     // (re)build a 150 ms jitter buffer
+  src.start(nextT); nextT += n / RATE;
+}
+
+// ---------- controls: theme, window, view ----------
+let win = +store.get("win", "30"), view = store.get("view", "charts");
+function mark(id, v) { document.querySelectorAll(`#${id} button`).forEach(b => b.setAttribute("aria-pressed", String(b.dataset.v === String(v)))); }
+$("win").onclick = e => { const b = e.target.closest("button"); if (b) { win = +b.dataset.v; store.set("win", win); mark("win", win); } };
+$("view").onclick = e => { const b = e.target.closest("button"); if (b) { view = b.dataset.v; store.set("view", view); applyView(); } };
+function applyView() { mark("view", view); $("main").classList.toggle("tables", view === "tables"); }
+mark("win", win); applyView();
+
+const THEMES = ["auto", "light", "dark"];
+let theme = store.get("theme", "auto");
+function applyTheme() {
+  if (theme === "auto") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", theme);
+  $("theme").textContent = "Theme: " + theme;
+}
+$("theme").onclick = () => { theme = THEMES[(THEMES.indexOf(theme) + 1) % 3]; store.set("theme", theme); applyTheme(); };
+applyTheme();
+
+// ---------- canvas helpers ----------
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+let C = {};
+function palette() { for (const k of ["ink", "ink-2", "muted", "grid", "axis", "surface", "s1", "s2", "s3"]) C[k] = css("--" + k); }
+const AX = ["s1", "s2", "s3"], AXN = ["X", "Y", "Z"];
+function fit(c) {
+  const r = c.getBoundingClientRect(), d = devicePixelRatio || 1;
+  const w = Math.round(r.width * d), h = Math.round(r.height * d);
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  const g = c.getContext("2d"); g.setTransform(d, 0, 0, d, 0, 0);
+  g.clearRect(0, 0, r.width, r.height);
+  return { g, w: r.width, h: r.height };
+}
+const FONT = '12px system-ui, -apple-system, "Segoe UI", sans-serif';
+const lowerBound = (a, t) => { let lo = 0, hi = a.length; while (lo < hi) { const m = (lo + hi) >> 1; if (a[m].t < t) lo = m + 1; else hi = m; } return lo; };
+const STEPS = [.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000];
+const niceRange = (m, min) => STEPS.find(s => s >= Math.max(m * 1.05, min)) || 2000;
+const tick = v => { const s = Math.abs(v) % 1 ? Math.abs(v).toFixed(2).replace(/0$/, "") : String(Math.abs(v)); return (v < 0 ? MINUS : "") + s; };
+
+// legends (>= 2 series) and static key rows
+function keys(id) { const el = $(id); AXN.forEach((n, i) => { const s = document.createElement("span"), k = document.createElement("i");
+  k.style.background = `var(--${AX[i]})`; s.append(k, n); el.append(s); }); }
+keys("k-accel"); keys("k-gyro");
+function readRow(id) { const el = $(id); AXN.forEach((n, i) => { const s = document.createElement("span"), k = document.createElement("i"), v = document.createElement("b");
+  k.style.background = `var(--${AX[i]})`; v.id = `${id}-${i}`; s.append(k, n + " ", v); el.append(s); });
+  const t = document.createElement("span"); t.append("Total "); const b = document.createElement("b"); b.id = id + "-m"; t.append(b); el.append(t); }
+readRow("r-accel");
+
+// ---------- time-series charts with crosshair + tooltip ----------
+const tip = $("tip");
+const charts = [];
+function lineChart(cfg) {
+  const c = Object.assign({ cv: $(cfg.id), ht: null }, cfg);
+  charts.push(c);
+  const setT = x => { const r = c.cv.getBoundingClientRect(); c.ht = clamp((x - r.left - c.padL) / (r.width - c.padL - c.padR), 0, 1); };
+  c.cv.addEventListener("pointermove", e => setT(e.clientX));
+  c.cv.addEventListener("pointerleave", () => { c.ht = null; });
+  c.cv.addEventListener("blur", () => { c.ht = null; });
+  c.cv.addEventListener("keydown", e => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault(); c.ht = clamp((c.ht ?? 1) + (e.key === "ArrowRight" ? 0.02 : -0.02), 0, 1);
+  });
+  c.padL = 40; c.padR = 14;
+  return c;
+}
+const powerWord = v => v > 0.05 ? "charging" : v < -0.05 ? "discharging" : "idle";   // same idle band as the device
+lineChart({ id: "c-power", arr: pwr, min: 2, unit: "W", unsigned: true, area: true,
+  series: [{ k: "p", name: "Battery power", c: "s1", d: 2, fmt: v => Math.abs(v).toFixed(2) + " W, " + powerWord(v) }] });
+lineChart({ id: "c-accel", arr: imu, min: 2, unit: "g", series: AXN.map((n, i) => ({ k: "a" + "xyz"[i], name: n, c: AX[i], d: 2 })) });
+lineChart({ id: "c-gyro",  arr: imu, min: 50, unit: "dps", series: AXN.map((n, i) => ({ k: "g" + "xyz"[i], name: n, c: AX[i], d: 0 })) });
+
+function drawChart(ch, now) {
+  if (!ch.cv.offsetWidth) return;                                         // hidden (table view)
+  const { g, w, h } = fit(ch.cv);
+  const padT = 8, padB = 22, pl = ch.padL, pr = ch.padR, pw_ = w - pl - pr, ph = h - padT - padB;
+  const a = ch.arr, n = a.length;
+  g.font = FONT; g.textBaseline = "middle";
+  if (n < 2) { g.fillStyle = C.muted; g.textAlign = "left"; g.fillText("Waiting for data from the Tab5.", pl, h / 2); return; }
+  const tEnd = a[n - 1].t, i0 = lowerBound(a, tEnd - win * 1000);
+  let m = 0;
+  for (let i = i0; i < n; i++) for (const s of ch.series) m = Math.max(m, Math.abs(a[i][s.k]));
+  const R = niceRange(m, ch.min), cy = padT + ph / 2;
+  const Y = v => cy - clamp(v / R, -1, 1) * ph / 2;
+  const X = t => pl + (1 - (tEnd - t) / (win * 1000)) * pw_;
+
+  g.lineWidth = 1; g.textAlign = "right";
+  for (const f of [-1, -.5, 0, .5, 1]) {
+    const y = cy - f * ph / 2;
+    g.strokeStyle = f === 0 ? C.axis : C.grid; g.beginPath(); g.moveTo(pl, y + .5); g.lineTo(w - pr, y + .5); g.stroke();
+    g.fillStyle = C.muted; g.fillText(tick(ch.unsigned ? Math.abs(f * R) : f * R), pl - 6, y);
+  }
+  if (ch.unsigned) {                                                      // direction replaces the +/- signs
+    g.fillStyle = C.muted; g.textAlign = "left"; g.textBaseline = "middle";
+    g.fillText("Charging", pl + 8, padT + 10); g.fillText("Discharging", pl + 8, padT + ph - 10);
+  }
+  g.fillStyle = C.muted; g.textBaseline = "alphabetic";
+  const stepS = win <= 10 ? 2 : win <= 30 ? 5 : 10;
+  for (let s = 0; s <= win; s += stepS) {
+    g.textAlign = s === 0 ? "right" : s === win ? "left" : "center";
+    g.fillText(s === 0 ? "now" : MINUS + s + " s", X(tEnd - s * 1000), h - 5);
+  }
+
+  const step = Math.max(1, Math.floor((n - i0) / (pw_ * 0.75)));
+  for (const s of ch.series) {
+    g.strokeStyle = C[s.c]; g.lineWidth = 2; g.lineJoin = "round"; g.lineCap = "round"; g.beginPath();
+    let first = true;
+    for (let i = i0; i < n; i += step) { const x = X(a[i].t), y = Y(a[i][s.k]); first ? g.moveTo(x, y) : g.lineTo(x, y); first = false; }
+    g.lineTo(X(a[n - 1].t), Y(a[n - 1][s.k]));
+    g.stroke();
+    if (ch.area) {
+      g.lineTo(X(a[n - 1].t), cy); g.lineTo(X(a[i0].t), cy); g.closePath();
+      g.globalAlpha = .10; g.fillStyle = C[s.c]; g.fill(); g.globalAlpha = 1;
+    }
+    const ex = X(a[n - 1].t), ey = Y(a[n - 1][s.k]);                       // end dot, 2px surface ring
+    g.fillStyle = C.surface; g.beginPath(); g.arc(ex, ey, 6, 0, 7); g.fill();
+    g.fillStyle = C[s.c]; g.beginPath(); g.arc(ex, ey, 4, 0, 7); g.fill();
+  }
+
+  // hover / keyboard: crosshair snaps to the nearest sample
+  if (ch.ht == null) { if (tipOwner === ch) { tip.style.display = "none"; tipOwner = null; } return; }
+  const tt = tEnd - (1 - ch.ht) * win * 1000;
+  let j = clamp(lowerBound(a, tt), i0, n - 1);
+  if (j > i0 && Math.abs(a[j - 1].t - tt) < Math.abs(a[j].t - tt)) j--;
+  const hx = X(a[j].t);
+  g.strokeStyle = C.axis; g.lineWidth = 1; g.beginPath(); g.moveTo(hx + .5, padT); g.lineTo(hx + .5, padT + ph); g.stroke();
+  for (const s of ch.series) {
+    const y = Y(a[j][s.k]);
+    g.fillStyle = C.surface; g.beginPath(); g.arc(hx, y, 6, 0, 7); g.fill();
+    g.fillStyle = C[s.c]; g.beginPath(); g.arc(hx, y, 4, 0, 7); g.fill();
+  }
+  showTip(ch, hx, a[j], tEnd);
+}
+
+let tipOwner = null;
+function showTip(ch, hx, row, tEnd) {
+  tipOwner = ch;
+  tip.replaceChildren();
+  const t = document.createElement("div"); t.className = "t";
+  const ago = (tEnd - row.t) / 1000; t.textContent = ago < 0.05 ? "Now" : ago.toFixed(1) + " s ago"; tip.append(t);
+  for (const s of ch.series) {
+    const r = document.createElement("div"); r.className = "r";
+    const k = document.createElement("i"); k.style.background = `var(--${s.c})`;
+    const nm = document.createElement("span"); nm.textContent = s.name;
+    const v = document.createElement("b"); v.textContent = s.fmt ? s.fmt(row[s.k]) : sgn(row[s.k], s.d) + " " + ch.unit;
+    r.append(k, nm, v); tip.append(r);
+  }
+  tip.style.display = "block";
+  const r = ch.cv.getBoundingClientRect(), tw = tip.offsetWidth, th = tip.offsetHeight;
+  let x = r.left + hx + 14; if (x + tw > innerWidth - 8) x = r.left + hx - tw - 14;
+  tip.style.left = Math.max(8, x) + "px"; tip.style.top = clamp(r.top + 10, 8, innerHeight - th - 8) + "px";
+}
+
+// ---------- g-force scope ----------
+function drawScope() {
+  const { g, w, h } = fit($("scope"));
+  const cx = w / 2, cy = h / 2, R = Math.min(w, h) / 2 - 26, G = 2;
+  g.font = FONT; g.lineWidth = 1;
+  for (let i = 1; i <= 4; i++) { g.strokeStyle = i === 2 ? C.axis : C.grid; g.beginPath(); g.arc(cx, cy, R * i / 4, 0, 7); g.stroke(); }
+  g.strokeStyle = C.grid; g.beginPath(); g.moveTo(cx - R, cy + .5); g.lineTo(cx + R, cy + .5); g.moveTo(cx + .5, cy - R); g.lineTo(cx + .5, cy + R); g.stroke();
+  g.fillStyle = C.muted; g.textAlign = "left"; g.textBaseline = "top";
+  g.fillText("1 g", cx + R / 2 + 4, cy + 4); g.fillText("2 g", cx + R + 4 - 24, cy + 4);
+  g.textAlign = "center"; g.textBaseline = "middle"; g.fillText("+X", cx + R + 12, cy - 12); g.fillText("+Y", cx + 14, cy - R - 12);
+  const n = imu.length; if (!n) return;
+  const pos = r => { let x = r.ax, y = r.ay; const m = Math.hypot(x, y); if (m > G) { x *= G / m; y *= G / m; } return [cx + x / G * R, cy - y / G * R]; };
+  const TR = 40, t0 = Math.max(0, n - TR);
+  g.fillStyle = C.ink;
+  for (let i = t0; i < n; i++) { const [px, py] = pos(imu[i]), k = (i - t0) / TR;
+    g.globalAlpha = .06 + .34 * k; g.beginPath(); g.arc(px, py, 2 + 4 * k, 0, 7); g.fill(); }
+  g.globalAlpha = 1;
+  const [bx, by] = pos(imu[n - 1]);
+  g.strokeStyle = C.muted; g.lineWidth = 2; g.beginPath(); g.moveTo(cx, cy); g.lineTo(bx, by); g.stroke();
+  g.fillStyle = C.surface; g.beginPath(); g.arc(bx, by, 12, 0, 7); g.fill();
+  g.fillStyle = C.ink; g.beginPath(); g.arc(bx, by, 9, 0, 7); g.fill();
+}
+
+// ---------- gyro dials ----------
+function drawDials() {
+  const { g, w, h } = fit($("dials"));
+  const RANGE = 500, R = Math.min(w / 3 / 2 - 8, h / 2 - 22), cyc = h / 2 - 2;
+  g.font = FONT; g.lineCap = "round";
+  AXN.forEach((nm, i) => {
+    const cx = w / 3 * (i + .5), v = lastImu ? lastImu["g" + "xyz"[i]] : 0;
+    const a0 = .75 * Math.PI, a1 = 2.25 * Math.PI, mid = 1.5 * Math.PI, sweep = clamp(v / RANGE, -1, 1) * .75 * Math.PI;
+    g.strokeStyle = C.grid; g.lineWidth = 6; g.beginPath(); g.arc(cx, cyc, R, a0, a1); g.stroke();
+    if (Math.abs(sweep) > .01) { g.strokeStyle = C[AX[i]]; g.lineWidth = 6; g.beginPath(); g.arc(cx, cyc, R, mid, mid + sweep, sweep < 0); g.stroke(); }
+    g.fillStyle = C.ink; g.textAlign = "center"; g.textBaseline = "middle"; g.font = "600 18px system-ui, sans-serif";
+    g.fillText(sgn(v, 0), cx, cyc - 2);
+    g.font = FONT; g.fillStyle = C["ink-2"]; g.fillText(nm + " axis", cx, cyc + 20);
+  });
+}
+
+// ---------- tables (the table-view twin of every chart) ----------
+let tblT = 0;
+function powerTable() {
+  const el = $("t-power"); el.replaceChildren();
+  const head = el.createTHead().insertRow();
+  ["Time", "State", "Power (W)", "Voltage (V)", "Current (A)"].forEach(t => { const th = document.createElement("th"); th.textContent = t; head.append(th); });
+  const body = el.createTBody();
+  if (pwr.length < 2) { const r = body.insertRow(), c = r.insertCell(); c.colSpan = 5; c.textContent = "Waiting for data from the Tab5."; return; }
+  const tEnd = pwr[pwr.length - 1].t;
+  for (let s = 0; s <= 10; s++) {
+    const row = pwr[clamp(lowerBound(pwr, tEnd - s * 1000), 0, pwr.length - 1)], r = body.insertRow();
+    r.insertCell().textContent = s === 0 ? "Now" : MINUS + s + " s";
+    r.insertCell().textContent = powerWord(row.p);
+    r.insertCell().textContent = Math.abs(row.p).toFixed(2); r.insertCell().textContent = row.v.toFixed(2); r.insertCell().textContent = Math.abs(row.i).toFixed(3);
+  }
+}
+function threeAxisTable(id, arr, pre, unit, d) {
+  const el = $(id); el.replaceChildren();
+  const head = el.createTHead().insertRow();
+  ["Time", ...AXN.map(n => `${n} (${unit})`)].forEach(t => { const th = document.createElement("th"); th.textContent = t; head.append(th); });
+  const body = el.createTBody();
+  if (arr.length < 2) { const r = body.insertRow(), c = r.insertCell(); c.colSpan = 4; c.textContent = "Waiting for data from the Tab5."; return; }
+  const tEnd = arr[arr.length - 1].t;
+  for (let s = 0; s <= 10; s++) {
+    const row = arr[clamp(lowerBound(arr, tEnd - s * 1000), 0, arr.length - 1)], r = body.insertRow();
+    r.insertCell().textContent = s === 0 ? "Now" : MINUS + s + " s";
+    for (const a of "xyz") r.insertCell().textContent = sgn(row[pre + a], d);
+  }
+}
+function updateTables(now) {
+  if (view !== "tables" || now - tblT < 500) return; tblT = now;
+  powerTable(); threeAxisTable("t-accel", imu, "a", "g", 2); threeAxisTable("t-gyro", imu, "g", "dps", 0);
+}
+
+// ---------- screen: on/off and brightness, by command ----------
+let scrOn = true, briDrag = false, briSent = 0;
+const sendBri = () => client.publish(T_CMD, "brightness " + Math.round($("bri").value * 2.55));
+$("scr").onclick = () => client.publish(T_CMD, scrOn ? "screen off" : "screen on");
+$("bri").addEventListener("pointerdown", () => { briDrag = true; });
+addEventListener("pointerup", () => { briDrag = false; });
+$("bri").addEventListener("input", () => { setText("bri-v", $("bri").value + "%"); const n = performance.now(); if (n - briSent > 120) { briSent = n; sendBri(); } });
+$("bri").addEventListener("change", sendBri);
+
+// ---------- readouts ----------
+function fmtDur(min) {
+  const t = Math.round(min);
+  if (min < 1) return "under 1 min";
+  if (t < 60) return t + " min";
+  if (t < 2880) return Math.floor(t / 60) + " h " + String(t % 60).padStart(2, "0") + " min";
+  return "more than 2 days";
+}
+const setText = (id, t) => { const e = $(id); if (e.textContent !== t) e.textContent = t; };
+function status(g, t, glyph, cls, text) { const e = $(g); e.textContent = glyph; e.className = "glyph " + cls; setText(t, text); }
+function readouts(now) {
+  status("g-broker", "t-broker", client.connected ? "✓" : "!", client.connected ? "ok" : "wait",
+         client.connected ? "Broker connected" : "Connecting to the broker");
+  const age = imuRx ? now - imuRx : Infinity;
+  while (rxTimes.length && now - rxTimes[0] > 1000) rxTimes.shift();
+  if (!client.connected) status("g-stream", "t-stream", "·", "", "Waiting for the broker");
+  else if (age < 2000) status("g-stream", "t-stream", "✓", "ok", `Tab5 streaming, ${rxTimes.length} readings/s`);
+  else if (imuRx) status("g-stream", "t-stream", "✕", "bad", "Tab5 stopped sending. Check it is on and on Wi-Fi.");
+  else status("g-stream", "t-stream", "!", "wait", "No data yet. Check the Tab5 is on and on Wi-Fi.");
+  setText("rate", age < 2000 ? `Updated ${rxTimes.length} readings/s` : "");
+
+  if (pw && now - pwrRx < 3000) {
+    setText("hp", Math.abs(pw.p).toFixed(2));
+    const st = pw.chg > 0 ? ["\u2191", "Charging", "Charging the battery"] : pw.chg < 0 ? ["\u2193", "Discharging", "Drawing from the battery"]
+                                                                          : ["\u2013", "Idle, not charging", "Battery power"];
+    setText("hs-g", st[0]); setText("hs", st[1]); setText("hl", st[2]);
+    setText("v-wh", pw.wh === undefined ? "–" : pw.wh.toFixed(1) + " Wh");
+    setText("l-eta", pw.avg > 0 ? "Time to full" : "Time left");
+    setText("v-eta", pw.eta === undefined ? "–" : pw.eta < 0 ? "No drain to estimate" : fmtDur(pw.eta));
+    setText("v-avg", pw.avg === undefined ? "–" : Math.abs(pw.avg).toFixed(2) + " W" + (Math.abs(pw.avg) < 0.05 ? "" : ", " + powerWord(pw.avg)));
+    if (pw.scr !== undefined) {
+      scrOn = !!pw.scr; setText("scr-t", scrOn ? "Turn screen off" : "Turn screen on");
+      if (!briDrag && document.activeElement !== $("bri")) { const pc = Math.max(5, Math.round(pw.bri / 2.55)); $("bri").value = pc; setText("bri-v", pc + "%"); }
+    }
+    setText("soc", pw.soc + "%");
+    const f = $("socfill"); f.style.width = clamp(pw.soc, 0, 100) + "%"; f.className = pw.soc < 10 ? "crit" : pw.soc < 20 ? "low" : "";
+    $("socbar").setAttribute("aria-valuenow", pw.soc);
+    setText("v-v", pw.v.toFixed(2) + " V"); setText("v-i", Math.abs(pw.i).toFixed(3) + " A");
+    setText("v-ti", pw.t_imu.toFixed(1) + " °C"); setText("v-tc", pw.t_chip.toFixed(0) + " °C");
+    setText("v-rssi", pw.rssi ? pw.rssi + " dBm" : "Unavailable");
+    setText("v-heap", Math.round(pw.heap / 1024) + " kB");
+    const live = listening && pw.mic > -90;
+    setText("ml", listening ? (pw.mic > -90 ? Math.round(pw.mic) + " dBFS" : "Starting") : "Off");
+    const mf = $("mfill"); mf.style.width = (live ? clamp((pw.mic + 90) / 90, 0, 1) * 100 : 0) + "%";
+  }
+  while (audioRx.length && now - audioRx[0] > 1000) audioRx.shift();
+  setText("mhint", listening
+    ? `Listening, ${audioRx.length} kB/s from the Tab5. Press Stop listening to turn the mic off.`
+    : "The mic stays off until you press Listen. Audio plays here and isn't saved.");
+  if (lastImu) {
+    ["ax", "ay", "az"].forEach((k, i) => setText(`r-accel-${i}`, sgn(lastImu[k], 2)));
+    setText("r-accel-m", Math.hypot(lastImu.ax, lastImu.ay, lastImu.az).toFixed(2) + " g");
+    setText("v-roll", sgn(lastImu.roll, 1) + "°"); setText("v-pitch", sgn(lastImu.pitch, 1) + "°"); setText("v-yaw", sgn(lastImu.yaw, 1) + "°");
+  }
+}
+
+// ---------- loop ----------
+function frame(now) {
+  palette(); readouts(now);
+  for (const ch of charts) drawChart(ch, now);
+  drawScope(); drawDials(); updateTables(now);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
