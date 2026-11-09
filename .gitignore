@@ -5,3 +5,6 @@ include/ca_cert.h
 .wifi-env
 broker/certs/
 broker/passwd
+tools/.venv
+tools/logs/
+__pycache__/
