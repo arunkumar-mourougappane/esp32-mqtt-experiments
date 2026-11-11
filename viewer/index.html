@@ -188,6 +188,7 @@
     <div class="screen">
       <h2>Screen</h2>
       <button class="btn" id="scr"><span id="scr-t">Turn screen off</span></button>
+      <button class="btn" id="slp" title="Screen off, slower sampling and sending, Wi-Fi power save. Touch the Tab5 or press Wake to end it."><span id="slp-t">Sleep</span></button>
       <div class="meter">
         <div class="row"><label for="bri">Brightness</label><b id="bri-v">–</b></div>
         <input type="range" id="bri" min="5" max="100" step="1">
@@ -538,9 +539,10 @@ function updateTables(now) {
 }
 
 // ---------- screen: on/off and brightness, by command ----------
-let scrOn = true, briDrag = false, briSent = 0;
+let scrOn = true, slpOn = false, briDrag = false, briSent = 0;
 const sendBri = () => client.publish(T_CMD, "brightness " + Math.round($("bri").value * 2.55));
 $("scr").onclick = () => client.publish(T_CMD, scrOn ? "screen off" : "screen on");
+$("slp").onclick = () => client.publish(T_CMD, slpOn ? "wake" : "sleep");
 $("bri").addEventListener("pointerdown", () => { briDrag = true; });
 addEventListener("pointerup", () => { briDrag = false; });
 $("bri").addEventListener("input", () => { setText("bri-v", $("bri").value + "%"); const n = performance.now(); if (n - briSent > 120) { briSent = n; sendBri(); } });
@@ -578,6 +580,7 @@ function readouts(now) {
     setText("v-avg", pw.avg === undefined ? "–" : Math.abs(pw.avg).toFixed(2) + " W" + (Math.abs(pw.avg) < 0.05 ? "" : ", " + powerWord(pw.avg)));
     if (pw.scr !== undefined) {
       scrOn = !!pw.scr; setText("scr-t", scrOn ? "Turn screen off" : "Turn screen on");
+      slpOn = !!pw.slp; setText("slp-t", slpOn ? "Wake" : "Sleep");
       if (!briDrag && document.activeElement !== $("bri")) { const pc = Math.max(5, Math.round(pw.bri / 2.55)); $("bri").value = pc; setText("bri-v", pc + "%"); }
     }
     setText("soc", pw.soc + "%");

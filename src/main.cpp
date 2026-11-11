@@ -89,7 +89,7 @@ struct PowerS {
   float avg;         // ~10 s average of p, W (+ charging)
   float wh;          // energy stored in the pack, Wh (capacity x charge %)
   float eta;         // minutes to empty (avg < 0) or to full (avg > 0); -1 = not meaningful
-  int   bri, scr;    // screen brightness 0..255 and on/off, so the viewer can show them
+  int   bri, scr, slp; // screen brightness 0..255, on/off and sleep mode, so the viewer can show them
 };
 
 static constexpr int MIC_N = 512, MIC_RATE = 16000;   // 32 ms blocks, 16-bit mono -> 32 kB/s
@@ -127,6 +127,18 @@ static volatile int     briWant = -1;      // pending brightness 0..255
 static volatile int     scrWant = -1;      // pending screen state: 1 on, 0 off
 static volatile uint8_t briLevel = 128;    // brightness used while the screen is on
 static volatile bool    scrOn = true;
+// Sleep mode (chosen by the user: menu tile or "sleep" command; touch or "wake" ends it). It is the sum of three
+// knobs that can also be set one by one for measuring: slow sampling and sending, Wi-Fi power save, a lower CPU clock.
+static volatile int     sleepWant = -1;    // pending: 1 enter sleep, 0 wake (applied by drawTask, which owns the display)
+static volatile bool    sleepMode;
+static volatile bool    rateSlow, psWant;  // slow rates; Wi-Fi power save on
+static volatile int     cpuWant;           // 0 = default clock, else MHz; only applied while the screen is off
+static volatile int     cpuDone;           // clock actually set by the tx task (0 = default)
+static SemaphoreHandle_t clkMtx;           // the clock is changed from two tasks: serialise it
+static volatile bool    panelWant, panelAsleep;   // put the display panel itself to sleep (DCS sleep-in) while the screen is off
+static constexpr int    SAMPLE_MS_SLOW = 100, IMU_DIV_SLOW = 5;   // 10 Hz sampling, every 5th sample sent = 2 per second
+static constexpr int    SLEEP_CPU_MHZ = 40;                       // clock in sleep mode (screen off only): 0.12 W less than 360 MHz
+static constexpr uint32_t CPU_FULL_MHZ = 360;
 static SemaphoreHandle_t i2cMtx; // IMU and INA226 share the internal I2C bus
 
 static M5Canvas canvas(&M5.Display);               // one STRIP_H-high strip, internal RAM
@@ -463,10 +475,53 @@ static void menuClose() { menuOpen = false; menuP = 0; bgReady = false; }
 static int   levelPct(int lvl) { return (lvl * 100 + 127) / 255; }
 static float levelFrac(int lvl) { float f = (levelPct(lvl) - 5) / 95.0f; return f < 0 ? 0 : f > 1 ? 1 : f; }
 
+// Before the screen is lit again the full CPU clock must be back (the tx task restores it while scrOn is still false)
+// and a sleeping panel must be woken (sleep-out needs 120 ms before the panel shows anything).
+static bool setClock(uint32_t mhz) {
+  xSemaphoreTake(clkMtx, portMAX_DELAY);
+  const bool ok = getCpuFrequencyMhz() == mhz || setCpuFrequencyMhz(mhz);
+  xSemaphoreGive(clkMtx);
+  return ok;
+}
+static void restoreClock() {
+  cpuWant = 0;
+  for (uint32_t t0 = millis(); cpuDone != 0 && millis() - t0 < 400; ) vTaskDelay(pdMS_TO_TICKS(10));
+  if (cpuDone != 0) {                                  // the tx task did not get to it in time: never light the panel slow
+    const bool ok = setClock(CPU_FULL_MHZ);
+    cpuDone = 0;
+    Serial.printf("cpu: restored %u MHz from the display task (%s)\n", (unsigned)CPU_FULL_MHZ, ok ? "ok" : "FAILED");
+  }
+}
+static void wakePanel() {
+  if (!panelAsleep) return;
+  uint32_t t0 = millis();
+  M5.Display.wakeup();
+  vTaskDelay(pdMS_TO_TICKS(130));
+  panelAsleep = false;
+  Serial.printf("panel: awake again (%u ms)\n", (unsigned)(millis() - t0));
+}
+static void powerUpScreen() { restoreClock(); wakePanel(); }
+
 static void screenSet(bool on) {
+  const uint32_t t0 = millis();
+  if (on) powerUpScreen();
   scrOn = on;
   M5.Display.setBrightness(on ? backlightDuty(briLevel) : 0);
+  if (on) Serial.printf("wake: screen lit %u ms after the request\n", (unsigned)(millis() - t0));
   if (!on) menuClose();
+}
+
+static void enterSleep() {
+  micWant = false;
+  // The panel is NOT put to sleep: the ST7123 is a combined display and touch controller, so panel sleep also switches off
+  // touch and nothing could wake the screen by touch. ("panel on" still exists as a measuring knob, woken by command only.)
+  sleepMode = true; rateSlow = true; psWant = true; cpuWant = SLEEP_CPU_MHZ;
+  screenSet(false);
+  Serial.println("sleep: entered");
+}
+static void exitSleep() {
+  sleepMode = false; rateSlow = false; psWant = false; panelWant = false; cpuWant = 0;
+  Serial.println("sleep: left");
 }
 
 static void sliderTo(int x) {
@@ -490,7 +545,7 @@ static void pollTouch() {
   auto t = M5.Touch.getDetail();
   if (swallow) { if (!t.isPressed()) swallow = false; return; }
   if (!scrOn) {
-    if (t.wasPressed()) { screenSet(true); swallow = true; Serial.println("touch: woke the screen"); }
+    if (t.wasPressed()) { screenSet(true); if (sleepMode) exitSleep(); swallow = true; Serial.println("touch: woke the screen"); }
     return;
   }
   if (!menuOpen) {
@@ -516,6 +571,8 @@ static void pollTouch() {
       if (downY - lastY > 80) { menuClose(); }                                               // swipe up
       else if (lastX >= T_X0 && lastX < T_X0 + T_W && lastY >= T_Y0 && lastY < T_Y0 + T_H) { // Screen off tile
         screenSet(false); swallow = true; Serial.println("touch: screen off");
+      } else if (lastX >= T_X0 + 3 * (T_W + T_GAP) && lastX < T_X0 + 3 * (T_W + T_GAP) + T_W && lastY >= T_Y0 && lastY < T_Y0 + T_H) {
+        enterSleep(); swallow = true;                                                       // Sleep tile
       } else if (lastY > MENU_H) { menuClose(); }                                            // tap outside
     } else {
       Serial.printf("touch: brightness %d%%\n", levelPct(briLevel));
@@ -565,6 +622,12 @@ static void drawMenu(const Snap &s) {
 
   drawWifiGlyph(x2 + T_W / 2, ty + 88, 14, 12, 4, 5, p.rssi);
   drawBrokerGlyph(x3 + T_W / 2 - 30, ty + 32, 60, 22, 30, 4, cTile2);
+
+  // sleep: a crescent moon (a button)
+  { const int x4 = T_X0 + 3 * (T_W + T_GAP), mx = x4 + T_W / 2, my = ty + T_H / 2;
+    g.fillRoundRect(x4, ty, T_W, T_H, 18, cTile);
+    g.fillCircle(mx - 4, my, 26, C_TXT);
+    g.fillCircle(mx + 8, my - 10, 22, cTile); }
 
   g.fillRoundRect(SCR_W / 2 - 40, off + MENU_H - 24, 80, 8, 4, C_DIM);
 }
@@ -635,17 +698,22 @@ static void drawTask(void *) {
   static Snap snap;                              // private copy (too big for the task stack)
   uint32_t fpsT = millis(); int frames = 0, fps = 0;
   for (;;) {
+    if (sleepWant >= 0) {
+      const int w = sleepWant; sleepWant = -1;
+      if (w == 1) enterSleep(); else { exitSleep(); screenSet(true); }
+    }
     if (briWant >= 0 || scrWant >= 0) {
       uint32_t t0 = millis();
       if (briWant >= 0) { briLevel = briWant; briWant = -1; }
-      if (scrWant >= 0) { scrOn = scrWant; scrWant = -1; if (!scrOn) menuClose(); }
+      if (scrWant >= 0) { if (scrWant == 1) powerUpScreen(); scrOn = scrWant; scrWant = -1; if (!scrOn) menuClose(); else if (sleepMode) exitSleep(); }
       M5.Display.setBrightness(scrOn ? backlightDuty(briLevel) : 0);
       Serial.printf("display apply: screen=%d level=%d duty=%d (read back %d) took %u ms\n", (int)scrOn, (int)briLevel,
                     (int)backlightDuty(briLevel), (int)M5.Display.getBrightness(), (unsigned)(millis() - t0));
     }
     pollTouch();
     menuP = menuOpen ? fminf(1.0f, menuP + 0.34f) : fmaxf(0.0f, menuP - 0.34f);
-    if (!scrOn) { vTaskDelay(pdMS_TO_TICKS(25)); continue; }      // backlight off: skip drawing, keep polling touch
+    if (!scrOn && panelWant && !panelAsleep) { M5.Display.sleep(); panelAsleep = true; Serial.println("panel: asleep"); }
+    if (!scrOn) { vTaskDelay(pdMS_TO_TICKS(sleepMode ? 50 : 25)); continue; }      // backlight off: skip drawing, keep polling touch
     if (menuOpen && bgReady && menuP >= 1.0f) {                   // panel fully open: redraw only when something changed
       uint32_t nowm = millis();
       if (!menuDirty && nowm - menuTick < 1000) { vTaskDelay(pdMS_TO_TICKS(15)); continue; }
@@ -707,12 +775,12 @@ static void sampleTask(void *) {
     live.head = (live.head + 1) % HIST;
     xSemaphoreGive(mtx);
 
-    if ((++tick & 1) == 0) {
+    if ((++tick % (rateSlow ? IMU_DIV_SLOW : 2)) == 0) {
       Sample m = {millis(), a[0], a[1], a[2], g[0], g[1], g[2],
                  (float)(roll * RAD_TO_DEG), (float)(pitch * RAD_TO_DEG), (float)(yaw * RAD_TO_DEG)};
       xQueueSend(sampleQ, &m, 0);                // drop if the tx task is behind
     }
-    vTaskDelayUntil(&last, pdMS_TO_TICKS(10));
+    vTaskDelayUntil(&last, pdMS_TO_TICKS(rateSlow ? SAMPLE_MS_SLOW : 10));
   }
 }
 
@@ -754,8 +822,8 @@ static void powerTask(void *) {
     }
     p.tImu = tImu; p.tChip = tChip; p.rssi = rssi; p.heap = heap; p.mic = micOn ? micLevel : -99.0f;
     if (!avgInit) { pAvg = p.p; avgInit = true; }
-    pAvg += 0.01f * (p.p - pAvg);                    // 10 Hz, ~10 s time constant
-    p.avg = pAvg; p.bri = briLevel; p.scr = scrOn;
+    pAvg += (rateSlow ? 0.1f : 0.01f) * (p.p - pAvg); // ~10 s time constant at 10 Hz (1 Hz in sleep)
+    p.avg = pAvg; p.bri = briLevel; p.scr = scrOn; p.slp = sleepMode;
     p.wh  = BAT_WH * p.soc / 100.0f;
     p.eta = pAvg < -ETA_MIN_W ? p.wh / -pAvg * 60.0f
           : pAvg >  ETA_MIN_W ? (BAT_WH - p.wh) / pAvg * 60.0f : -1.0f;   // charge taper makes "to full" optimistic
@@ -767,8 +835,8 @@ static void powerTask(void *) {
     xSemaphoreGive(mtx);
     xQueueSend(powerQ, &p, 0);
 
-    tick++;
-    vTaskDelayUntil(&last, pdMS_TO_TICKS(100));
+    if (rateSlow) { tick = (tick / 10 + 1) * 10; vTaskDelayUntil(&last, pdMS_TO_TICKS(1000)); }   // 1 Hz; keep tick on a multiple of 10
+    else          { tick++;                       vTaskDelayUntil(&last, pdMS_TO_TICKS(100)); }
   }
 }
 
@@ -870,7 +938,18 @@ static void publish(const Sample &m) {
 static void onMessage(char *topic, uint8_t *pl, unsigned len) {
   if (strcmp(topic, MQTT_TOPIC_CMD) != 0) return;
   char c[24] = {}; memcpy(c, pl, len < sizeof c - 1 ? len : sizeof c - 1);
-  if (!strcmp(c, "mic on"))     micWant = true;
+  if (!strcmp(c, "mic on"))     micWant = !sleepMode;      // no microphone in sleep mode
+  if (!strcmp(c, "sleep") || !strcmp(c, "sleep on"))  sleepWant = 1;
+  if (!strcmp(c, "wake")  || !strcmp(c, "sleep off")) sleepWant = 0;
+  // single knobs, for measuring what each part of sleep mode saves
+  if (!strcmp(c, "rates slow"))   rateSlow = true;
+  if (!strcmp(c, "rates normal")) rateSlow = false;
+  if (!strcmp(c, "ps on"))        psWant = true;
+  if (!strcmp(c, "ps off"))       psWant = false;
+  if (!strcmp(c, "panel on"))     panelWant = true;
+  if (!strcmp(c, "panel off"))    panelWant = false;
+  int mhz;
+  if (sscanf(c, "cpu %d", &mhz) == 1 && mhz >= 0 && mhz <= 360) cpuWant = mhz;
   if (!strcmp(c, "mic off"))    micWant = false;
   if (!strcmp(c, "screen on"))  scrWant = 1;
   if (!strcmp(c, "screen off")) scrWant = 0;
@@ -883,9 +962,9 @@ static void publishPower(const PowerS &p) {
   int n = snprintf(b, sizeof b,
     "{\"t\":%lu,\"v\":%.3f,\"i\":%.4f,\"p\":%.3f,\"soc\":%.0f,\"chg\":%d,"
     "\"t_imu\":%.1f,\"t_chip\":%.1f,\"rssi\":%d,\"heap\":%lu,\"mic\":%.1f,"
-    "\"avg\":%.3f,\"wh\":%.2f,\"eta\":%.0f,\"scr\":%d,\"bri\":%d}",
+    "\"avg\":%.3f,\"wh\":%.2f,\"eta\":%.0f,\"scr\":%d,\"bri\":%d,\"slp\":%d}",
     (unsigned long)p.t, p.v, p.i, p.p, p.soc, p.chg, p.tImu, p.tChip, p.rssi, (unsigned long)p.heap, p.mic,
-    p.avg, p.wh, p.eta, p.scr, p.bri);
+    p.avg, p.wh, p.eta, p.scr, p.bri, p.slp);
   if (n > 0 && mqtt.publish(MQTT_TOPIC_POWER, b)) pubTotal++;
 }
 
@@ -902,11 +981,32 @@ static void txTask(void *) {
     lastIter = it;
     txBeat = it;
     netService();
+    // Wi-Fi power save and CPU clock follow the sleep knobs. Both are calls into the C6 / clock tree, so they run here and are timed.
+    static int psDone = 0; static wifi_ps_type_t psDefault = WIFI_PS_MIN_MODEM; static bool psDefKnown = false;
+    static uint32_t cpuDefault = 0; if (!cpuDefault) cpuDefault = getCpuFrequencyMhz();
+    if (wifiUp) {
+      if (!psDefKnown) { psDefault = WiFi.getSleep(); psDefKnown = true; Serial.printf("wifi: power save mode at start = %d\n", (int)psDefault); }
+      if (psDone != (int)psWant) {
+        uint32_t t0 = millis();
+        bool ok = WiFi.setSleep(psWant ? WIFI_PS_MAX_MODEM : psDefault);
+        Serial.printf("wifi: power save %s %s (%u ms)\n", psWant ? "on" : "off", ok ? "ok" : "FAILED", (unsigned)(millis() - t0));
+        psDone = psWant;
+      }
+    }
+    // A lower clock starves the display (noise, 1 fps), so it is only honoured with the screen off, and the full clock is
+    // restored before the screen can come back on (drawTask waits for cpuDone == 0 before it lights the panel).
+    const int cpuTarget = scrOn ? 0 : (int)cpuWant;
+    if (cpuDone != cpuTarget) {
+      const uint32_t want = cpuTarget ? (uint32_t)cpuTarget : cpuDefault;
+      bool ok = setClock(want);
+      Serial.printf("cpu: %u MHz %s (now %u MHz)\n", (unsigned)want, ok ? "ok" : "FAILED", (unsigned)getCpuFrequencyMhz());
+      cpuDone = cpuTarget;
+    }
     mqttUp = mqtt.connected();
     if (mqttUp) mqttDownSince = 0; else if (wifiUp && !mqttDownSince) mqttDownSince = millis() | 1;
     if (mqttUp) lastOnline = millis();
     else if (millis() - lastOnline > OFFLINE_RESTART_MS) recoveryRestart("no MQTT link");
-    if (xQueueReceive(sampleQ, &m, pdMS_TO_TICKS(10)) == pdTRUE && mqttUp) publish(m);
+    if (xQueueReceive(sampleQ, &m, pdMS_TO_TICKS(rateSlow ? 100 : 10)) == pdTRUE && mqttUp) publish(m);
     PowerS pw;
     while (xQueueReceive(powerQ, &pw, 0) == pdTRUE) if (mqttUp) publishPower(pw);
     static AudioChunk ac;
@@ -949,6 +1049,7 @@ void setup() {
   powerQ  = xQueueCreate(16, sizeof(PowerS));
   audioQ  = xQueueCreate(6, sizeof(AudioChunk));
   i2cMtx  = xSemaphoreCreateMutex();
+  clkMtx  = xSemaphoreCreateMutex();
 
   // Core 0: graphics. Core 1: sampling (higher prio) and MQTT transmit.
   xTaskCreatePinnedToCore(drawTask,   "gfx",    12288, nullptr, 1, nullptr, CORE_GFX);
