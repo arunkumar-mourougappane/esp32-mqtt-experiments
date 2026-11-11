@@ -112,6 +112,8 @@ static SemaphoreHandle_t mtx;
 // Single-writer status flags (aligned 32-bit, so reads/writes are atomic on this core).
 static volatile bool     wifiUp, mqttUp;
 static volatile uint32_t pubRate;
+static volatile uint32_t pubTotal;                 // every message published (all topics): drives the activity dot
+static volatile uint32_t wifiDownSince, mqttDownSince;   // millis() when the link went down, 0 = up (mqtt: counted while Wi-Fi is up)
 
 struct Sample { uint32_t t; float ax, ay, az, gx, gy, gz, roll, pitch, yaw; };
 static QueueHandle_t sampleQ;   // sampleTask -> txTask
@@ -145,8 +147,8 @@ struct Gx {
   }
   void drawCircle(int x, int y, int r, uint16_t c) { if (!out(y - r, y + r)) canvas.drawCircle(x, y - oy, r, c); }
   void fillCircle(int x, int y, int r, uint16_t c) { if (!out(y - r, y + r)) canvas.fillCircle(x, y - oy, r, c); }
-  void drawArc(int x, int y, int r0, int r1, float a0, float a1, uint16_t c) { if (!out(y - r0, y + r0)) canvas.drawArc(x, y - oy, r0, r1, a0, a1, c); }
-  void fillArc(int x, int y, int r0, int r1, float a0, float a1, uint16_t c) { if (!out(y - r0, y + r0)) canvas.fillArc(x, y - oy, r0, r1, a0, a1, c); }
+  void drawArc(int x, int y, int r0, int r1, float a0, float a1, uint16_t c) { int R = r0 > r1 ? r0 : r1; if (!out(y - R, y + R)) canvas.drawArc(x, y - oy, r0, r1, a0, a1, c); }
+  void fillArc(int x, int y, int r0, int r1, float a0, float a1, uint16_t c) { int R = r0 > r1 ? r0 : r1; if (!out(y - R, y + R)) canvas.fillArc(x, y - oy, r0, r1, a0, a1, c); }
   void drawString(const char *t, int x, int y) { if (!out(y, y + 8 * textSize)) canvas.drawString(t, x, y - oy); }
   void drawCenterString(const char *t, int x, int y) { if (!out(y, y + 8 * textSize)) canvas.drawCenterString(t, x, y - oy); }
   void setTextSize(int sz) { textSize = sz; canvas.setTextSize(sz); }
@@ -347,20 +349,255 @@ static void drawPower(const Snap &s, int y0, int h) {
   }
 }
 
-static void drawHeader(int fps) {
+// Status glyphs, shared by the header and the quick-settings panel.
+// Wi-Fi: three arcs and a dot. Connected: lit arcs and colour follow the signal (>= -60 dBm 3 green, >= -70 2 green,
+// >= -80 1 amber, weaker 1 red; rssi 0 = reading unavailable, shown as plain connected). Not connected: the arcs sweep
+// in amber while it is (re)joining; after 30 s down they sweep in red with a slash.
+static const uint32_t LINK_GRACE_MS = 30000;
+static uint16_t amber() { return g.color565(255, 176, 32); }
+
+static void drawWifiGlyph(int wx, int wy, int base, int step, int thick, int dot, int rs) {
+  const uint32_t now = millis();
+  int lit; uint16_t c; bool slash = false;
+  if (wifiUp) {
+    if (rs == 0 || rs >= -60) { lit = 3; c = C_Y; }
+    else if (rs >= -70)       { lit = 2; c = C_Y; }
+    else if (rs >= -80)       { lit = 1; c = amber(); }
+    else                      { lit = 1; c = C_X; }
+  } else {
+    slash = now - wifiDownSince > LINK_GRACE_MS;      // wifiDownSince 0 at boot: counts from power-up
+    c = slash ? C_X : amber();
+    lit = (int)((now / 250) % 4);                     // 0..3 arcs, repeating
+  }
+  for (int k = 0; k < 3; k++) g.drawArc(wx, wy, base + step * k, base + step * k + thick, 225, 315, k < lit ? c : (uint16_t)C_GRID);
+  g.fillCircle(wx, wy, dot, c);
+  if (slash) {
+    const int R = base + 2 * step + thick;
+    g.drawLine(wx - R * 8 / 10, wy - R * 115 / 100, wx + R * 8 / 10, wy + 4, c);
+    g.drawLine(wx - R * 8 / 10 + 1, wy - R * 115 / 100, wx + R * 8 / 10 + 1, wy + 4, c);
+  }
+}
+
+// Activity: true while messages are going out; flickers (toggles every 8 messages) so you can see data moving.
+static bool pubFlicker() {
+  static uint32_t seen, seenAt;
+  const uint32_t now = millis(), t = pubTotal;
+  if (t != seen) { seen = t; seenAt = now; }
+  return now - seenAt < 300 && ((t >> 3) & 1);
+}
+
+// Broker: a two-unit server. Connected: green, the lower dot flickers with traffic. Connecting (Wi-Fi up, broker not):
+// amber, the two dots blink in turn; after 30 s red with a slash. Wi-Fi down: red, slashed, still.
+// (x, y) is the top-left corner; holeColor is the colour of an unlit dot.
+static void drawBrokerGlyph(int x, int y, int w, int h, int pitch, int dot, uint16_t holeColor) {
+  const uint32_t now = millis();
+  uint16_t c; bool slash = false; int blink = -1;       // blink: which dot is lit, -1 none
+  if (mqttUp)       { c = C_Y; blink = pubFlicker() ? 1 : -1; }
+  else if (!wifiUp) { c = C_X; slash = true; }
+  else {
+    slash = mqttDownSince && now - mqttDownSince > LINK_GRACE_MS;
+    c = slash ? C_X : amber();
+    blink = (int)((now / 250) & 1);
+  }
+  for (int k = 0; k < 2; k++) {
+    g.fillRoundRect(x, y + pitch * k, w, h, h / 4, c);
+    g.fillCircle(x + w * 4 / 5, y + pitch * k + h / 2, dot, k == blink ? (uint16_t)C_TXT : holeColor);
+  }
+  if (slash) {
+    g.drawLine(x - 2, y - 2, x + w + 2, y + pitch + h + 2, C_TXT);
+    g.drawLine(x - 1, y - 2, x + w + 3, y + pitch + h + 2, C_TXT);
+  }
+}
+
+static void drawHeader(int fps, int rssi) {
   g.fillRect(0, 0, SCR_W, 76, C_PANEL);
   g.setTextSize(3); g.setTextColor(C_TXT);
   g.drawString("Tab5 IMU", 16, 10);
   g.setTextSize(2);
-  g.setTextColor(wifiUp ? C_Y : C_X); g.drawString(wifiUp ? "WiFi OK" : "WiFi --", 240, 14);
-  g.setTextColor(mqttUp ? C_Y : C_X); g.drawString(mqttUp ? "MQTT OK" : "MQTT --", 380, 14);
+  drawWifiGlyph(262, 32, 4, 4, 2, 2, rssi);              // all within y 14..35, clear of the text line at y 46
+  drawBrokerGlyph(304, 14, 24, 9, 12, 1, C_PANEL);
   g.setTextColor(C_DIM);
   char b[64];
-  snprintf(b, sizeof b, "%u msg/s -> %s:%d", (unsigned)pubRate, MQTT_HOST, MQTT_PORT);
+  snprintf(b, sizeof b, "%u msg/s", (unsigned)pubRate);
   g.drawString(b, 16, 46);
+  // ">>>" drawn as three chevrons that light up in turn while the broker link is up (red and still when it is down).
+  // 5 steps of 160 ms: 0..2 one chevron bright with a dimmer trail behind it, 3 the last trail, 4 rest.
+  int x = 16 + (int)strlen(b) * 12 + 12;
+  const int ph = mqttUp ? (int)((millis() / 160) % 5) : -1;
+  const uint16_t mid = g.color565(45, 120, 110);
+  for (int k = 0; k < 3; k++) {
+    const uint16_t c = !mqttUp ? C_X : ph == k ? C_Y : ph == k + 1 ? mid : (uint16_t)C_GRID;
+    const int cx = x + 14 * k, cy = 54;
+    for (int t = 0; t < 2; t++) {                               // two lines wide
+      g.drawLine(cx + t, cy - 8, cx + 7 + t, cy, c);
+      g.drawLine(cx + 7 + t, cy, cx + t, cy + 8, c);
+    }
+  }
+  x += 3 * 14 + 8;
+  snprintf(b, sizeof b, "%s:%d", MQTT_HOST, MQTT_PORT);
+  g.drawString(b, x, 46);
   snprintf(b, sizeof b, "%d fps", fps);
   g.drawString(b, SCR_W - 100, 14);
   if (micOn) { g.fillCircle(SCR_W - 60, 56, 9, C_X); g.setTextColor(C_X); g.drawString("MIC", SCR_W - 44, 48); }
+}
+
+// ---------- touch + quick settings (drawTask only) ----------
+// Swipe down from the top edge to pull the panel down: brightness slider and a Screen off tile. With the screen
+// off, any touch wakes it (and that touch is swallowed). The library's flick detection is unreliable, so the pull
+// gesture is tracked by hand: a touch that starts in the top EDGE_PX and moves down PULL_PX opens the panel.
+static uint8_t backlightDuty(uint8_t lvl);
+static constexpr int EDGE_PX = 40, PULL_PX = 150, MENU_H = 380;
+static constexpr int SL_X0 = 120, SL_X1 = 600, SL_Y = 150;                 // slider track, panel coordinates
+static constexpr int T_X0 = 24, T_Y0 = 214, T_W = 150, T_H = 120, T_GAP = 24;      // four icon tiles per row
+static bool  menuOpen, trackPull, swallow, dragSlider;
+static float menuP;                                                       // 0 closed .. 1 fully open
+static int   pullY0, lastX, lastY, downY;
+// While the panel is up the dashboard is frozen: it is drawn once, dimmed, and the strips under the panel are kept
+// here (PSRAM). Sliding then only copies those strips back and draws the panel; closing redraws the live dashboard.
+static constexpr int CACHE_STRIPS = (MENU_H + STRIP_H - 1) / STRIP_H;
+static uint16_t *bgCache;
+static bool     bgReady, menuDirty;
+static uint32_t menuTick;
+static void menuClose() { menuOpen = false; menuP = 0; bgReady = false; }
+
+static int   levelPct(int lvl) { return (lvl * 100 + 127) / 255; }
+static float levelFrac(int lvl) { float f = (levelPct(lvl) - 5) / 95.0f; return f < 0 ? 0 : f > 1 ? 1 : f; }
+
+static void screenSet(bool on) {
+  scrOn = on;
+  M5.Display.setBrightness(on ? backlightDuty(briLevel) : 0);
+  if (!on) menuClose();
+}
+
+static void sliderTo(int x) {
+  float f = (float)(x - SL_X0) / (SL_X1 - SL_X0);
+  f = f < 0 ? 0 : f > 1 ? 1 : f;
+  int lvl = (int)(255.0f * (5.0f + 95.0f * f) / 100.0f + 0.5f);
+  if (lvl == (int)briLevel) return;
+  briLevel = lvl;
+  M5.Display.setBrightness(backlightDuty(briLevel));
+  menuDirty = true;
+}
+
+static void pollTouch() {
+  static uint32_t last;
+  uint32_t now = millis();
+  if (now - last < 20) return;                       // 50 Hz at most
+  last = now;
+  xSemaphoreTake(i2cMtx, portMAX_DELAY);             // touch shares the internal I2C bus with the IMU and INA226
+  M5.update();
+  xSemaphoreGive(i2cMtx);
+  auto t = M5.Touch.getDetail();
+  if (swallow) { if (!t.isPressed()) swallow = false; return; }
+  if (!scrOn) {
+    if (t.wasPressed()) { screenSet(true); swallow = true; Serial.println("touch: woke the screen"); }
+    return;
+  }
+  if (!menuOpen) {
+    if (t.wasPressed()) { trackPull = t.y < EDGE_PX; pullY0 = t.y; }
+    else if (trackPull && t.isPressed() && t.y - pullY0 > PULL_PX) {
+      if (!bgCache) { Serial.println("touch: no cache memory, panel disabled"); trackPull = false; return; }
+      menuOpen = true; menuP = 0; bgReady = false; menuDirty = true; trackPull = false; swallow = true;
+      Serial.println("touch: quick settings opened");
+    }
+    if (!t.isPressed()) trackPull = false;
+    return;
+  }
+  if (menuP < 1.0f) return;                          // still sliding in
+  if (t.isPressed()) { lastX = t.x; lastY = t.y; }
+  if (t.wasPressed()) {
+    downY = t.y;
+    dragSlider = t.y > SL_Y - 45 && t.y < SL_Y + 45 && t.x > SL_X0 - 30 && t.x < SL_X1 + 30;
+    if (dragSlider) sliderTo(t.x);
+  } else if (t.isPressed() && dragSlider) {
+    sliderTo(t.x);
+  } else if (t.wasReleased()) {
+    if (!dragSlider) {
+      if (downY - lastY > 80) { menuClose(); }                                               // swipe up
+      else if (lastX >= T_X0 && lastX < T_X0 + T_W && lastY >= T_Y0 && lastY < T_Y0 + T_H) { // Screen off tile
+        screenSet(false); swallow = true; Serial.println("touch: screen off");
+      } else if (lastY > MENU_H) { menuClose(); }                                            // tap outside
+    } else {
+      Serial.printf("touch: brightness %d%%\n", levelPct(briLevel));
+    }
+    dragSlider = false;
+  }
+}
+
+static void drawMenu(const Snap &s) {
+  const int off = (int)((menuP - 1.0f) * MENU_H);                     // slides down from above the screen
+  const uint16_t cShade = g.color565(23, 28, 35), cTile = g.color565(35, 43, 53), cKnob = g.color565(91, 140, 255);
+  g.fillRoundRect(0, off - 24, SCR_W, MENU_H + 24, 22, cShade);
+  g.setTextSize(3); g.setTextColor(C_TXT);
+  g.drawString("Quick settings", 28, off + 26);
+  const PowerS &p = s.pw;
+  char b[64];
+  snprintf(b, sizeof b, "%.0f%%  %s  %.1f W", p.soc, p.chg > 0 ? "charging" : p.chg < 0 ? "discharging" : "idle", fabsf(p.avg));
+  g.setTextSize(2); g.setTextColor(C_DIM);
+  g.drawString(b, 28, off + 70);
+
+  // brightness: sun icon, track, knob, percentage
+  const int cy = off + SL_Y, sx = SL_X0 + (int)(levelFrac(briLevel) * (SL_X1 - SL_X0));
+  g.drawCircle(64, cy, 9, C_TXT); g.drawCircle(64, cy, 10, C_TXT);
+  for (int k = 0; k < 8; k++) {
+    float a = k * (float)M_PI / 4;
+    g.drawLine(64 + (int)(16 * cosf(a)), cy + (int)(16 * sinf(a)), 64 + (int)(23 * cosf(a)), cy + (int)(23 * sinf(a)), C_TXT);
+  }
+  g.fillRoundRect(SL_X0, cy - 5, SL_X1 - SL_X0, 10, 5, C_GRID);
+  g.fillRoundRect(SL_X0, cy - 5, sx - SL_X0, 10, 5, cKnob);
+  g.fillCircle(sx, cy, 22, C_TXT);
+  snprintf(b, sizeof b, "%d%%", levelPct(briLevel));
+  g.setTextSize(2); g.setTextColor(C_TXT);
+  g.drawString(b, 626, cy - 8);
+
+  // tiles: icons only. 1 = Screen off (a button), 2 = Wi-Fi and 3 = broker (status, green when up, red with a slash when down)
+  const int ty = off + T_Y0, cTile2 = g.color565(27, 34, 42);
+  const int x1 = T_X0, x2 = T_X0 + (T_W + T_GAP), x3 = T_X0 + 2 * (T_W + T_GAP);
+  g.fillRoundRect(x1, ty, T_W, T_H, 18, cTile);
+  g.fillRoundRect(x2, ty, T_W, T_H, 18, cTile2);
+  g.fillRoundRect(x3, ty, T_W, T_H, 18, cTile2);
+
+  // power symbol
+  { const int ix = x1 + T_W / 2, iy = ty + T_H / 2 + 6;
+    g.drawCircle(ix, iy, 24, C_TXT); g.drawCircle(ix, iy, 25, C_TXT); g.drawCircle(ix, iy, 26, C_TXT);
+    g.fillRect(ix - 12, iy - 34, 24, 24, cTile);                 // gap in the ring
+    g.fillRoundRect(ix - 2, iy - 36, 5, 30, 2, C_TXT); }
+
+  drawWifiGlyph(x2 + T_W / 2, ty + 88, 14, 12, 4, 5, p.rssi);
+  drawBrokerGlyph(x3 + T_W / 2 - 30, ty + 32, 60, 22, 30, 4, cTile2);
+
+  g.fillRoundRect(SCR_W / 2 - 40, off + MENU_H - 24, 80, 8, 4, C_DIM);
+}
+
+// Panel frames: restore the cached, dimmed dashboard under the panel, draw the panel, push only those strips.
+static void drawMenuFrame(const Snap &s) {
+  const int bottom = (int)((menuP - 1.0f) * MENU_H) + MENU_H;
+  for (int i = 0; i < CACHE_STRIPS && i * STRIP_H < bottom; i++) {
+    pollTouch();
+    if (!menuOpen) return;                                 // closed meanwhile: the next frame redraws everything
+    g.oy = i * STRIP_H;
+    memcpy(canvas.getBuffer(), bgCache + (size_t)i * SCR_W * STRIP_H, (size_t)SCR_W * STRIP_H * 2);
+    drawMenu(s);
+    canvas.pushSprite(0, g.oy);
+  }
+}
+
+// Opening the panel: do not re-render the dashboard. Read the picture that is already on the screen back from the
+// panel framebuffer, halve every pixel's brightness (RGB565: shift right one and mask the bits that crossed fields,
+// two pixels per 32-bit word), keep the strips the panel will cover, and push them all back.
+static void freezeDashboard() {
+  uint32_t t0 = millis();
+  const size_t words = (size_t)SCR_W * STRIP_H / 2, bytes = (size_t)SCR_W * STRIP_H * 2;
+  for (int i = 0; i < SCR_H / STRIP_H; i++) {
+    const int y = i * STRIP_H;
+    M5.Display.readRect(0, y, SCR_W, STRIP_H, (lgfx::rgb565_t *)canvas.getBuffer());
+    uint32_t *w = (uint32_t *)canvas.getBuffer();
+    for (size_t k = 0; k < words; k++) w[k] = (w[k] >> 1) & 0x7BEF7BEFu;
+    if (i < CACHE_STRIPS) memcpy(bgCache + (size_t)i * SCR_W * STRIP_H, canvas.getBuffer(), bytes);
+    canvas.pushSprite(0, y);
+  }
+  bgReady = true;
+  Serial.printf("panel: dashboard frozen in %u ms\n", (unsigned)(millis() - t0));
 }
 
 static void draw(const Snap &s, int fps) {
@@ -369,10 +606,14 @@ static void draw(const Snap &s, int fps) {
   const int y3 = y2 + h2 + gap, h3 = 200;
   const int y4 = y3 + h3 + gap, h4 = SCR_H - y4 - 8;
 
+  if (menuOpen && !bgReady) { freezeDashboard(); return; }
+  if (menuOpen && bgReady) { drawMenuFrame(s); return; }
+
   for (int y = 0; y < SCR_H; y += STRIP_H) {
+    pollTouch();                                 // between strips: keeps touch responsive at ~13 fps
     g.oy = y;
     canvas.fillSprite(C_BG);
-    drawHeader(fps);
+    drawHeader(fps, s.pw.rssi);
     drawScope(s, y1, h1);
     drawDials(s, y2, h2);
     drawLinear(s, y3, h3);
@@ -397,12 +638,19 @@ static void drawTask(void *) {
     if (briWant >= 0 || scrWant >= 0) {
       uint32_t t0 = millis();
       if (briWant >= 0) { briLevel = briWant; briWant = -1; }
-      if (scrWant >= 0) { scrOn = scrWant; scrWant = -1; }
+      if (scrWant >= 0) { scrOn = scrWant; scrWant = -1; if (!scrOn) menuClose(); }
       M5.Display.setBrightness(scrOn ? backlightDuty(briLevel) : 0);
       Serial.printf("display apply: screen=%d level=%d duty=%d (read back %d) took %u ms\n", (int)scrOn, (int)briLevel,
                     (int)backlightDuty(briLevel), (int)M5.Display.getBrightness(), (unsigned)(millis() - t0));
     }
-    if (!scrOn) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }     // backlight off: skip drawing too
+    pollTouch();
+    menuP = menuOpen ? fminf(1.0f, menuP + 0.34f) : fmaxf(0.0f, menuP - 0.34f);
+    if (!scrOn) { vTaskDelay(pdMS_TO_TICKS(25)); continue; }      // backlight off: skip drawing, keep polling touch
+    if (menuOpen && bgReady && menuP >= 1.0f) {                   // panel fully open: redraw only when something changed
+      uint32_t nowm = millis();
+      if (!menuDirty && nowm - menuTick < 1000) { vTaskDelay(pdMS_TO_TICKS(15)); continue; }
+      menuDirty = false; menuTick = nowm;
+    }
 
     xSemaphoreTake(mtx, portMAX_DELAY);
     memcpy(&snap, &live, sizeof snap);
@@ -569,6 +817,8 @@ static int failStreak;
 static void netService() {
   uint32_t now = millis();
   wifiUp = WiFi.status() == WL_CONNECTED;
+  if (wifiUp) wifiDownSince = 0;
+  else { if (!wifiDownSince) wifiDownSince = now | 1; mqttDownSince = 0; }
   if (!wifiUp) {
     if (now - lastWifiTry > 10000 || lastWifiTry == 0) { lastWifiTry = now ? now : 1; WiFi.begin(WIFI_SSID, WIFI_PASS); }
     return;
@@ -614,7 +864,7 @@ static void publish(const Sample &m) {
     "{\"t\":%lu,\"ax\":%.4f,\"ay\":%.4f,\"az\":%.4f,\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f,"
     "\"roll\":%.2f,\"pitch\":%.2f,\"yaw\":%.2f}",
     (unsigned long)m.t, m.ax, m.ay, m.az, m.gx, m.gy, m.gz, m.roll, m.pitch, m.yaw);
-  if (n > 0 && mqtt.publish(MQTT_TOPIC, p)) pubCount++;
+  if (n > 0 && mqtt.publish(MQTT_TOPIC, p)) { pubCount++; pubTotal++; }
 }
 
 static void onMessage(char *topic, uint8_t *pl, unsigned len) {
@@ -636,7 +886,7 @@ static void publishPower(const PowerS &p) {
     "\"avg\":%.3f,\"wh\":%.2f,\"eta\":%.0f,\"scr\":%d,\"bri\":%d}",
     (unsigned long)p.t, p.v, p.i, p.p, p.soc, p.chg, p.tImu, p.tChip, p.rssi, (unsigned long)p.heap, p.mic,
     p.avg, p.wh, p.eta, p.scr, p.bri);
-  if (n > 0) mqtt.publish(MQTT_TOPIC_POWER, b);
+  if (n > 0 && mqtt.publish(MQTT_TOPIC_POWER, b)) pubTotal++;
 }
 
 // A slow connect only delays this task; samples are dropped, not backlogged.
@@ -653,13 +903,14 @@ static void txTask(void *) {
     txBeat = it;
     netService();
     mqttUp = mqtt.connected();
+    if (mqttUp) mqttDownSince = 0; else if (wifiUp && !mqttDownSince) mqttDownSince = millis() | 1;
     if (mqttUp) lastOnline = millis();
     else if (millis() - lastOnline > OFFLINE_RESTART_MS) recoveryRestart("no MQTT link");
     if (xQueueReceive(sampleQ, &m, pdMS_TO_TICKS(10)) == pdTRUE && mqttUp) publish(m);
     PowerS pw;
     while (xQueueReceive(powerQ, &pw, 0) == pdTRUE) if (mqttUp) publishPower(pw);
     static AudioChunk ac;
-    while (xQueueReceive(audioQ, &ac, 0) == pdTRUE) if (mqttUp) mqtt.publish(MQTT_TOPIC_AUDIO, (const uint8_t *)ac.pcm, sizeof ac.pcm);
+    while (xQueueReceive(audioQ, &ac, 0) == pdTRUE) if (mqttUp && mqtt.publish(MQTT_TOPIC_AUDIO, (const uint8_t *)ac.pcm, sizeof ac.pcm)) pubTotal++;
     uint32_t now = millis();
     if (now - rateT >= 1000) { rateT = now; pubRate = pubCount; pubCount = 0; Serial.printf("pub=%u/s\n", (unsigned)pubRate); }
   }
@@ -675,6 +926,8 @@ void setup() {
   canvas.setColorDepth(lgfx::rgb565_nonswapped);   // match the DSI panel's native format
   canvas.setPsram(false);                          // internal RAM: ~10x faster fills than PSRAM
   if (!canvas.createSprite(SCR_W, STRIP_H)) Serial.println("strip sprite alloc failed");
+  bgCache = (uint16_t *)heap_caps_malloc((size_t)CACHE_STRIPS * SCR_W * STRIP_H * 2, MALLOC_CAP_SPIRAM);
+  if (!bgCache) Serial.println("panel cache alloc failed");
   canvas.setTextDatum(top_left);
 
   Serial.begin(115200);
