@@ -20,7 +20,7 @@ Scripts under `broker/` set up a local Mosquitto broker, and scripts under `tool
 | `src/prov.*` | Stored settings: encrypted Wi-Fi/broker secrets, certificates, the PIN and its lockout |
 | `src/setup_mode.*`, `src/portal_page.h` | First-run setup: the Tab5's own Wi-Fi network, QR code, and the setup page served to your phone |
 | `src/pin_screen.*` | The PIN keypad shown before "set up again" |
-| `broker/` | Mosquitto config, access lists, and the scripts that create certificates and start the broker; `broker/provision/` holds the public files you upload on the setup page |
+| `broker/` | Mosquitto config, access lists, and the scripts that create certificates (`setup-tls.sh`, `issue-device-cert.sh`) and start the broker; `broker/provision/` holds the files you upload on the setup page |
 | `viewer/index.html` | The dashboard. Opens straight from disk; no server needed |
 | `tools/endurance.py` | Long-running health test of the whole chain |
 | `tools/powerbench.py` | Measures what each part of sleep mode saves, from the battery sensor |
@@ -46,13 +46,21 @@ You need PlatformIO, Podman (for the broker) and Python 3.
 
    This creates a private CA, a server certificate, and the MQTT user `tab5` with a random password (or the one you give). It writes `include/mqtt_creds.h` for the test tools and puts the public CA certificate in `broker/provision/ca.crt`, the file you upload on the Tab5's setup page. Nothing here is committed. A short password is fine for testing, but the broker listens on your LAN, so use a random one for real.
 
+   To sign in with a certificate instead of a password, also issue a device certificate:
+
+   ```
+   broker/issue-device-cert.sh [name]           # default name: tab5-device
+   ```
+
+   This makes a new key and a certificate for the Tab5, signed by the same CA, in `broker/provision/` (`tab5.crt` and `tab5.key`, with `ca.crt` copied beside them). The name becomes the MQTT username. The key is not encrypted, so treat the folder like a password; it is git-ignored. Re-running makes a new pair.
+
 2. **Start the broker**:
 
    ```
    broker/run.sh
    ```
 
-   Port 8883 is MQTT over TLS with a login (the Tab5). Port 9001 is MQTT over WebSockets, bound to `127.0.0.1` only, read-only plus the command topic, no login (the viewer).
+   Port 8883 is MQTT over TLS with a username and password. Port 8884 is MQTT over TLS with a device certificate and no password: the client must present a certificate issued by the CA, and its name is used as the username (Mosquitto cannot mix the two methods on one port). Both are reachable from the LAN. Port 9001 is MQTT over WebSockets, bound to `127.0.0.1` only, read-only plus the command topic, no login (the viewer).
 
 3. **Build and flash**:
 
@@ -109,7 +117,7 @@ With nothing stored, the Tab5 shows a QR code and opens its own Wi-Fi network (`
 
 1. Scan the QR code with your phone. It joins the network and the setup page opens by itself; if it does not, go to `192.168.4.1`.
 2. Fill in the five steps: **Wi-Fi** (pick from the scanned list, or type the name), **Broker** (address, port, and how to sign in), **Certificates**, **PIN**, then **Check and save**.
-3. For the broker you choose one of two ways to sign in: **username and password** (port 8883, needs the CA certificate) or **device certificate** (port 8884, needs the CA certificate, a device certificate and its key). Each certificate can be chosen as a file or pasted as text; the Tab5 checks it and tells you what it found (name, key type, expiry). For the device certificate it also checks that the key belongs to it and that the CA issued it.
+3. For the broker you choose one of two ways to sign in: **username and password** (port 8883, needs the CA certificate) or **device certificate** (port 8884, needs the CA certificate, a device certificate and its key, from `broker/issue-device-cert.sh`; copy the three files in `broker/provision/` to your phone, for example by AirDrop). Each certificate can be chosen as a file or pasted as text; the Tab5 checks it and tells you what it found (name, key type, expiry). For the device certificate it also checks that the key belongs to it and that the CA issued it.
 4. Save. The Tab5 shows "Setup complete" and restarts onto the new settings.
 
 <table>
@@ -167,7 +175,7 @@ Commands:
 | `sleep` / `wake` | Enter or leave sleep mode |
 | `rates slow` / `rates normal`, `ps on` / `ps off`, `panel on` / `panel off`, `cpu <MHz>` | The individual parts of sleep mode, for measuring. The CPU clock only changes while the screen is off. `panel on` puts the display panel to sleep, which also disables touch, so only `wake` can end sleep then |
 
-The device's access list lets it use only `tab5/#`. The viewer's access list lets it read `tab5/#` and write only `tab5/cmd`.
+The access lists let a device (either sign-in method) use only `tab5/#`. The viewer's access list lets it read `tab5/#` and write only `tab5/cmd`.
 
 ## Testing
 
@@ -199,7 +207,7 @@ tools/.venv/bin/python tools/powerbench.py --cpus 180,90,40     # real sleep mod
 
 ## Roadmap
 
-- **Certificate sign-in on the broker.** The setup page already offers "device certificate", but the broker has no listener for it yet. To do: a script that issues `tab5.crt` and `tab5.key` from the existing CA into `broker/provision/`, a second Mosquitto listener on 8884 that requires a client certificate and takes the device name from it, and an access list for that name.
-- Not yet tested: Android's captive-portal check on the setup network, and a large (multi-KB) certificate pasted on the setup page.
+- Not yet tested: Android's captive-portal check on the setup network, a large (multi-KB) certificate pasted on the setup page, and the setup page's refusals for a key that does not belong to the certificate or a certificate from another CA.
+- Certificate sign-in is built and was tried end to end (the Tab5 connects on 8884 and the broker records it as `tab5-device`), but there is no way yet to revoke a single device certificate other than replacing the CA.
 
 `spike/spike.cpp` is the throwaway firmware that first confirmed the access point, captive page, form posts and touch work on this hardware. Build it with `pio run -e spike -t upload`; a plain `pio run` still builds the real firmware.
