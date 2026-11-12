@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Start (or restart) the Mosquitto broker used by the Tab5 IMU app.
 #   8883 -> MQTT over TLS + password, reachable from the LAN (the Tab5 connects here)
+#   8884 -> MQTT over TLS + a device certificate (no password), reachable from the LAN (the Tab5 can connect here instead)
 #   9001 -> MQTT over WebSockets, 127.0.0.1 only, read-only, no login (the browser viewer connects here)
 # Run broker/setup-tls.sh once first.
 set -euo pipefail
@@ -19,11 +20,13 @@ podman info >/dev/null 2>&1 || podman machine start
 podman rm -f "$NAME" >/dev/null 2>&1 || true
 podman run -d --name "$NAME" --restart unless-stopped \
   -p 8883:8883 \
+  -p 8884:8884 \
   -p 127.0.0.1:9001:9001 \
   -v "$DIR/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" \
   -v "$DIR/passwd:/mosquitto/config/passwd:ro" \
   -v "$DIR/acl.devices:/mosquitto/config/acl.devices:ro" \
   -v "$DIR/acl.viewer:/mosquitto/config/acl.viewer:ro" \
+  -v "$DIR/acl.certs:/mosquitto/config/acl.certs:ro" \
   -v "$DIR/certs:/mosquitto/certs:ro" \
   "$IMAGE" >/dev/null
 

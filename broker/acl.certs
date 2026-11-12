@@ -1,0 +1,2 @@
+# Devices signed in with a certificate (port 8884): any holder of a certificate from our CA may use tab5/#.
+pattern readwrite tab5/#
