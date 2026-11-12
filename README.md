@@ -112,11 +112,27 @@ With nothing stored, the Tab5 shows a QR code and opens its own Wi-Fi network (`
 3. For the broker you choose one of two ways to sign in: **username and password** (port 8883, needs the CA certificate) or **device certificate** (port 8884, needs the CA certificate, a device certificate and its key). Each certificate can be chosen as a file or pasted as text; the Tab5 checks it and tells you what it found (name, key type, expiry). For the device certificate it also checks that the key belongs to it and that the CA issued it.
 4. Save. The Tab5 shows "Setup complete" and restarts onto the new settings.
 
+<table>
+<tr>
+<td align="center" valign="top"><img src="docs/images/mockups/tab5-1-scan.png" alt="Design mockup of the Tab5 first-run screen with a QR code" width="260"><br>The Tab5 screen: scan the QR code</td>
+<td align="center" valign="top"><img src="docs/images/mockups/setup-1-wifi.png" alt="Design mockup of the setup page, step 1 of 5: choose your Wi-Fi" width="260"><br>The setup page on the phone, step 1 of 5</td>
+</tr>
+</table>
+
+<p align="center"><em>Design mockups. The real screens follow them; the network names are examples. All the screens, step by step, are in <a href="docs/mockups.md">docs/mockups.md</a>.</em></p>
+
 Setup closes after 10 minutes. On a first run the screen then says so and a touch starts it again. If settings that were just saved cannot join the Wi-Fi within 90 s, or reach the broker within 150 s, the Tab5 reopens setup with the reason shown (for example "The broker refused the login"). The page is plain HTTP, since there is no certificate a phone would trust for `192.168.4.1`. It is protected only by the random Wi-Fi password in the QR code, so setup only runs for a few minutes and closes once it is saved.
 
 ### Set up again
 
 Swipe down for the quick-settings panel and tap the padlock tile. The Tab5 restarts and shows a PIN keypad. Cancel returns to normal running with the stored settings. The right PIN opens setup again, with the saved values filled in: saved passwords and the key show as "Unchanged" and are replaced only if you type new ones. After 5 wrong PINs the keypad locks for a minute, and a restart does not skip the wait.
+
+<table>
+<tr>
+<td align="center" valign="top"><img src="docs/images/mockups/tab5-4-quick-settings.png" alt="Design mockup of the quick-settings panel" width="260"><br>Quick settings (the finished panel is icon-only; the padlock is in a second row)</td>
+<td align="center" valign="top"><img src="docs/images/mockups/tab5-6-pin.png" alt="Design mockup of the Tab5 PIN keypad" width="260"><br>The PIN keypad (the finished screen shows "Wrong PIN." or a lockout countdown instead of the "5 tries" line)</td>
+</tr>
+</table>
 
 A forgotten PIN cannot be recovered. The way back is to erase the Tab5's flash and flash it again (for example `pio run -t erase`, then `pio run -t upload`; I have not tried this on this board). That erases everything stored, so the Tab5 runs first-run setup again.
 
