@@ -5,9 +5,22 @@
 #   - MQTT user "tab5" + random password (kept; reused)        broker/passwd (hashed)
 #   - headers embedded in the firmware                         include/ca_cert.h, include/mqtt_creds.h
 # Re-run after your LAN IP changes (the cert is bound to the IP), then reflash.
-# Usage: broker/setup-tls.sh [broker-ip]
+#   - the public files to upload on the Tab5 setup page                     broker/provision/ca.crt
+# Usage: broker/setup-tls.sh [broker-ip] [--password <password>]
+#   --password sets the MQTT password of user "tab5" (letters, digits, . _ -); without it a random one is made on the
+#   first run and kept. A short password is handy for testing, but the broker listens on the LAN: use a random one for real.
 set -euo pipefail
 cd "$(dirname "$0")"
+PASSWORD_OVERRIDE="${MQTT_PASSWORD:-}"
+args=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --password) PASSWORD_OVERRIDE="${2:?--password needs a value}"; shift 2 ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+set -- ${args[@]+"${args[@]}"}
+[[ -z "$PASSWORD_OVERRIDE" || "$PASSWORD_OVERRIDE" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "password may only contain letters, digits, . _ -" >&2; exit 1; }
 HOST_IP="${1:-$(ipconfig getifaddr en0)}"
 C=certs; mkdir -p "$C"
 
@@ -28,9 +41,10 @@ chmod 644 "$C"/*.crt "$C/server.key"
 chmod 600 "$C/ca.key"
 echo "server cert issued for $HOST_IP"
 
-if [[ ! -f passwd || ! -f ../include/mqtt_creds.h ]]; then
-  PASS="$(openssl rand -hex 16)"
+if [[ -n "$PASSWORD_OVERRIDE" || ! -f passwd || ! -f ../include/mqtt_creds.h ]]; then
+  PASS="${PASSWORD_OVERRIDE:-$(openssl rand -hex 16)}"
   podman info >/dev/null 2>&1 || podman machine start
+  rm -f passwd          # mosquitto_passwd (another user inside the container) will not overwrite an existing file
   podman run --rm -v "$PWD:/work" docker.io/library/eclipse-mosquitto:2 \
     mosquitto_passwd -c -b /work/passwd tab5 "$PASS" >/dev/null 2>&1
   chmod 644 passwd
@@ -42,4 +56,9 @@ fi
   cat "$C/ca.crt"
   printf ')EOF";\n'; } > ../include/ca_cert.h
 echo "wrote include/ca_cert.h and include/mqtt_creds.h"
+
+# The files you upload on the Tab5 setup page. Public only: the CA private key never leaves certs/.
+mkdir -p provision
+cp "$C/ca.crt" provision/ca.crt
+echo "public files for the setup page are in broker/provision/ (ca.crt)"
 echo "next: broker/run.sh, then rebuild + flash the firmware"
