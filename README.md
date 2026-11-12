@@ -6,6 +6,7 @@ Firmware for the M5Stack Tab5 (ESP32-P4, with an ESP32-C6 coprocessor that provi
 - measures battery power with the INA226 and estimates stored energy and time left;
 - streams everything to an MQTT broker over Wi-Fi with TLS and a login;
 - takes commands back from the broker: screen on/off, brightness, microphone, sleep;
+- sets itself up on first run from a phone, with no Wi-Fi name, passwords or certificates built into the firmware;
 - recovers on its own when the Wi-Fi/MQTT link wedges.
 
 A browser dashboard (`viewer/`) shows the stream, plots it, controls the Tab5 and plays the microphone.
@@ -15,13 +16,15 @@ Scripts under `broker/` set up a local Mosquitto broker, and scripts under `tool
 
 | Path | What it is |
 |---|---|
-| `src/main.cpp` | The firmware |
-| `include/` | Credentials the firmware is built with (`secrets.h` you write; the rest is generated, see Setup) |
-| `broker/` | Mosquitto config, access lists, and the scripts that create certificates and start the broker |
+| `src/main.cpp` | The firmware: tasks for sampling, drawing, power, microphone and MQTT; the quick-settings panel |
+| `src/prov.*` | Stored settings: encrypted Wi-Fi/broker secrets, certificates, the PIN and its lockout |
+| `src/setup_mode.*`, `src/portal_page.h` | First-run setup: the Tab5's own Wi-Fi network, QR code, and the setup page served to your phone |
+| `src/pin_screen.*` | The PIN keypad shown before "set up again" |
+| `broker/` | Mosquitto config, access lists, and the scripts that create certificates and start the broker; `broker/provision/` holds the public files you upload on the setup page |
 | `viewer/index.html` | The dashboard. Opens straight from disk; no server needed |
 | `tools/endurance.py` | Long-running health test of the whole chain |
 | `tools/powerbench.py` | Measures what each part of sleep mode saves, from the battery sensor |
-| `spike/` | A throwaway test firmware used to check that first-run setup is feasible (see "Roadmap") |
+| `spike/` | Test builds: `provtest` (storage self-test), `setuptest` (setup mode on its own), `spike` (the feasibility experiment) |
 
 ## Hardware
 
@@ -37,26 +40,13 @@ You need PlatformIO, Podman (for the broker) and Python 3.
 1. **Create the broker certificates and credentials** (one time; re-run if the Mac's LAN address changes, because the certificate is bound to it):
 
    ```
-   broker/setup-tls.sh            # or: broker/setup-tls.sh <broker-ip>
+   broker/setup-tls.sh                          # or: broker/setup-tls.sh <broker-ip>
+   broker/setup-tls.sh --password <password>    # optional: choose the broker password instead of a random one
    ```
 
-   This creates a private CA, a server certificate, the MQTT user `tab5` with a random password, and the generated headers `include/ca_cert.h` and `include/mqtt_creds.h`. None of these are committed.
+   This creates a private CA, a server certificate, and the MQTT user `tab5` with a random password (or the one you give). It writes `include/mqtt_creds.h` for the test tools and puts the public CA certificate in `broker/provision/ca.crt`, the file you upload on the Tab5's setup page. Nothing here is committed. A short password is fine for testing, but the broker listens on your LAN, so use a random one for real.
 
-2. **Write `include/secrets.h`** (not committed):
-
-   ```cpp
-   #pragma once
-   #define WIFI_SSID        "your-network"
-   #define WIFI_PASS        "your-password"
-   #define MQTT_HOST        "192.168.1.x"     // this Mac's LAN address, as printed by broker/run.sh
-   #define MQTT_PORT        8883
-   #define MQTT_TOPIC       "tab5/imu"
-   #define MQTT_TOPIC_POWER "tab5/power"
-   #define MQTT_TOPIC_CMD   "tab5/cmd"
-   #define MQTT_TOPIC_AUDIO "tab5/audio"
-   ```
-
-3. **Start the broker**:
+2. **Start the broker**:
 
    ```
    broker/run.sh
@@ -64,13 +54,15 @@ You need PlatformIO, Podman (for the broker) and Python 3.
 
    Port 8883 is MQTT over TLS with a login (the Tab5). Port 9001 is MQTT over WebSockets, bound to `127.0.0.1` only, read-only plus the command topic, no login (the viewer).
 
-4. **Build and flash**:
+3. **Build and flash**:
 
    ```
    pio run -t upload
    ```
 
    Use the `pio` that is on your PATH. The one inside `~/.platformio/penv` is too old for this platform and will uninstall it.
+
+4. **Set the Tab5 up from your phone.** A Tab5 with nothing stored opens first-run setup by itself (see "First-run setup" below). No network name, password or certificate is built into the firmware.
 
 5. **Open the viewer**: open `viewer/index.html` in a browser. It connects to `ws://localhost:9001`.
 
@@ -98,7 +90,8 @@ Swipe down from the very top edge. The dashboard dims and a panel slides down:
 - a brightness slider (5-100%);
 - **power symbol**: turn the screen off;
 - **Wi-Fi** and **server** symbols: link status;
-- **moon**: sleep mode.
+- **moon**: sleep mode;
+- **padlock** (second row): set up again, behind the PIN.
 
 Close it with a swipe up or by tapping the dimmed area. With the screen off, touching anywhere wakes it; that touch is not passed on.
 
@@ -109,6 +102,27 @@ Chosen from the moon tile or with the `sleep` command; it never starts by itself
 Measured on battery (USB unplugged), the battery draw goes from about 1.8 W awake to about 0.72 W in sleep mode: roughly 8 hours versus 20 hours on a full pack. Of the 1.08 W saved, the backlight is about 0.76 W, slower rates about 0.25 W, and the 40 MHz clock about 0.1 W. Wi-Fi deep power save added nothing measurable.
 
 The display panel is deliberately left awake. The Tab5's ST7123 is a combined display and touch controller, so putting the panel to sleep also switches off touch and nothing could wake the screen by touch. Panel sleep would save another 0.17 W, but then only the `wake` command could end sleep.
+
+### First-run setup
+
+With nothing stored, the Tab5 shows a QR code and opens its own Wi-Fi network (`Tab5-Setup-xxxx`, with a random password shown on screen).
+
+1. Scan the QR code with your phone. It joins the network and the setup page opens by itself; if it does not, go to `192.168.4.1`.
+2. Fill in the five steps: **Wi-Fi** (pick from the scanned list, or type the name), **Broker** (address, port, and how to sign in), **Certificates**, **PIN**, then **Check and save**.
+3. For the broker you choose one of two ways to sign in: **username and password** (port 8883, needs the CA certificate) or **device certificate** (port 8884, needs the CA certificate, a device certificate and its key). Each certificate can be chosen as a file or pasted as text; the Tab5 checks it and tells you what it found (name, key type, expiry). For the device certificate it also checks that the key belongs to it and that the CA issued it.
+4. Save. The Tab5 shows "Setup complete" and restarts onto the new settings.
+
+Setup closes after 10 minutes. On a first run the screen then says so and a touch starts it again. If settings that were just saved cannot join the Wi-Fi within 90 s, or reach the broker within 150 s, the Tab5 reopens setup with the reason shown (for example "The broker refused the login"). The page is plain HTTP, since there is no certificate a phone would trust for `192.168.4.1`. It is protected only by the random Wi-Fi password in the QR code, so setup only runs for a few minutes and closes once it is saved.
+
+### Set up again
+
+Swipe down for the quick-settings panel and tap the padlock tile. The Tab5 restarts and shows a PIN keypad. Cancel returns to normal running with the stored settings. The right PIN opens setup again, with the saved values filled in: saved passwords and the key show as "Unchanged" and are replaced only if you type new ones. After 5 wrong PINs the keypad locks for a minute, and a restart does not skip the wait.
+
+A forgotten PIN cannot be recovered. The way back is to erase the Tab5's flash and flash it again (for example `pio run -t erase`, then `pio run -t upload`; I have not tried this on this board). That erases everything stored, so the Tab5 runs first-run setup again.
+
+### Stored settings
+
+Settings are kept in the chip's NVS storage. The Wi-Fi password, the broker password and the device private key are encrypted with AES-256-GCM, using a key derived from the chip's unique ID, so they are not readable on the screen, the serial port or the network, and a raw dump of the flash does not contain them (a self-test checks this). The Wi-Fi name, broker address and the certificates are stored as they are. The PIN is stored only as a salted PBKDF2-HMAC-SHA256 hash. No eFuses are burned, so someone who dumps the flash and runs this firmware on the same chip could still recover the secrets. This keeps them away from the ordinary interfaces, not from a determined attacker with the hardware.
 
 ### Recovery
 
@@ -144,6 +158,12 @@ The device's access list lets it use only `tab5/#`. The viewer's access list let
 Close the browser viewer first for both tools; anything else publishing to `tab5/cmd` interferes.
 
 ```
+# the settings storage on the device: encryption, tamper checks, "secrets are not in flash", PIN and lockout (about 3 minutes)
+pio run -e provtest -t upload          # then read the serial port; it prints PASS or FAIL for each check
+
+# the setup mode on its own, to try it with a phone without the rest of the firmware
+pio run -e setuptest -t upload
+
 # 30 minutes of health checks: stalls, rates, memory, reboots, commands, device log
 tools/.venv/bin/python tools/endurance.py --minutes 30 --serial /dev/cu.usbmodem2101
 
@@ -158,14 +178,12 @@ tools/.venv/bin/python tools/powerbench.py --cpus 180,90,40     # real sleep mod
 
 - A lower CPU clock starves the display (noise, 1 fps) and can leave it in a bad state until a reset, so the firmware only honours it while the screen is off and restores 360 MHz before the screen lights; if the transmit task has not done so within 0.4 s the display task does it. While the clock is at 40 MHz the display driver logs "can't fetch data from external memory fast enough" on the serial port. The screen is dark then and the messages stop once the clock is back.
 - The Wi-Fi signal reading and the access-point status are calls into the C6 that can block when the C6 does not answer. The firmware polls the signal every 10 s and stops for good after the first timeout; the symbol then shows plain "connected".
-- `broker/setup-tls.sh` binds the server certificate to the Mac's LAN address. If DHCP gives the Mac a new address, re-run it, update `MQTT_HOST`, and reflash. Reserving the address on the router avoids this.
+- `broker/setup-tls.sh` binds the server certificate to the Mac's LAN address. If DHCP gives the Mac a new address, re-run it, restart the broker, and set the Tab5 up again with the new address. Reserving the address on the router avoids this.
 - The broker container restarts with Podman but not after a reboot of the Podman VM; run `broker/run.sh` again.
 
 ## Roadmap
 
-Designed but not built yet:
+- **Certificate sign-in on the broker.** The setup page already offers "device certificate", but the broker has no listener for it yet. To do: a script that issues `tab5.crt` and `tab5.key` from the existing CA into `broker/provision/`, a second Mosquitto listener on 8884 that requires a client certificate and takes the device name from it, and an access list for that name.
+- Not yet tested: Android's captive-portal check on the setup network, and a large (multi-KB) certificate pasted on the setup page.
 
-- **First-run setup**: with nothing saved, the Tab5 opens its own Wi-Fi network and shows a QR code; a phone joins and fills in a setup page (Wi-Fi, broker, certificates, a PIN). Secrets are stored encrypted, the setup network closes after 10 minutes, and a PIN is needed to run setup again.
-- **Broker sign-in by certificate** (mutual TLS) as an alternative to username and password, on a second broker listener.
-
-`spike/` is the throwaway firmware that confirmed the access point, captive page, form posts and touch all work on this hardware. Build it with `pio run -e spike -t upload`; a plain `pio run` still builds the real firmware.
+`spike/spike.cpp` is the throwaway firmware that first confirmed the access point, captive page, form posts and touch work on this hardware. Build it with `pio run -e spike -t upload`; a plain `pio run` still builds the real firmware.
