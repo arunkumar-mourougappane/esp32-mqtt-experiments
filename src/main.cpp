@@ -15,6 +15,7 @@
 #include <PubSubClient.h>
 #include <math.h>
 #include <time.h>
+#include <Preferences.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
 #include "prov.h"         // Wi-Fi, broker and certificates come from here (stored encrypted), not from the build
@@ -25,9 +26,15 @@
 #define MQTT_TOPIC_POWER "tab5/power"
 #define MQTT_TOPIC_CMD   "tab5/cmd"
 #define MQTT_TOPIC_AUDIO "tab5/audio"
+#define MQTT_TOPIC_JOY   "tab5/joy"     // M5Stack I2C Joystick 2 Unit on Port A: calibrated x, y (-4095..4095) and the button
 
 static constexpr int   HIST        = 300;     // history samples (3 s at 100 Hz)
 static constexpr int   PHIST       = 300;     // power history (30 s at 10 Hz)
+static constexpr int   JHIST       = 300;     // joystick history (6 s at 50 Hz)
+static constexpr int   JTRAIL      = 40;      // samples drawn as the fading trail behind the dot (0.8 s)
+static constexpr int   JRAW        = 4095;    // the unit's own calibrated x and y run from -JRAW to +JRAW, each axis clipped separately
+static constexpr int   JMAX        = 1000;    // what we use: -JMAX..+JMAX = -100.0..+100.0 %, the vector's length clamped to a circle
+static constexpr uint8_t JOY_ADDR  = 0x63;    // Joystick 2 Unit, STM32G030
 static constexpr float PWR_RANGE_W = 15.0f;   // power chart range, +/- W
 static constexpr float BAT_WH      = 14.8f;   // NP-F550 pack: 2000 mAh x 7.4 V. Change if you fit another battery.
 static constexpr float ETA_MIN_W   = 0.3f;    // below this average power there is nothing meaningful to estimate
@@ -75,6 +82,7 @@ static void sampleTask(void *);
 static void txTask(void *);
 static void powerTask(void *);
 static void micTask(void *);
+static void joyTask(void *);
 static void drawTask(void *);
 
 // ---------- shared state ----------
@@ -100,6 +108,9 @@ struct PowerS {
 static constexpr int MIC_N = 512, MIC_RATE = 16000;   // 32 ms blocks, 16-bit mono -> 32 kB/s
 struct AudioChunk { int16_t pcm[MIC_N]; };
 
+// One reading of the joystick unit, after the orientation switches (flip x, flip y, swap) have been applied.
+struct JoyS { uint32_t t; int x, y; int rx, ry; bool pressed; bool present; };   // x, y scaled (+-JMAX); rx, ry as the unit gives them (+-JRAW)
+
 struct Snap {
   float a[3];                 // accel, g (raw, includes gravity)
   float g[3];                 // gyro, dps
@@ -110,6 +121,9 @@ struct Snap {
   PowerS pw;                  // latest power reading
   float pHist[PHIST];         // battery power history, W
   int   pHead;
+  JoyS  joy;                  // latest joystick reading
+  int16_t jx[JHIST], jy[JHIST];   // joystick history ring (oldest at jHead)
+  int   jHead;
 };
 static Snap live;
 static SemaphoreHandle_t mtx;
@@ -129,6 +143,22 @@ struct Sample { uint32_t t; float ax, ay, az, gx, gy, gz, roll, pitch, yaw; };
 static QueueHandle_t sampleQ;   // sampleTask -> txTask
 static QueueHandle_t powerQ;    // powerTask  -> txTask
 static QueueHandle_t audioQ;    // micTask    -> txTask
+static QueueHandle_t joyQ;      // joyTask    -> txTask
+// Which way the stick points on screen depends on how the unit is held, so three switches fix it (saved in NVS).
+static volatile bool joyFlipX, joyFlipY, joySwap;
+static int page;                // 0 dashboard, 1 joystick (drawTask only)
+static void joyToggle(int which) {              // 0 flip x, 1 flip y, 2 swap axes, 3 back to the defaults
+  if (which == 0) joyFlipX = !joyFlipX; else if (which == 1) joyFlipY = !joyFlipY; else if (which == 2) joySwap = !joySwap;
+  else { joyFlipX = joyFlipY = joySwap = false; }
+  Preferences pr;
+  if (pr.begin("joy", false)) { pr.putBool("fx", joyFlipX); pr.putBool("fy", joyFlipY); pr.putBool("sw", joySwap); pr.end(); }
+  Serial.printf("joystick: flip x=%d flip y=%d swap=%d\n", (int)joyFlipX, (int)joyFlipY, (int)joySwap);
+}
+static void joyTileTap(int x, int y);
+static void joyLoad() {
+  Preferences pr;
+  if (pr.begin("joy", true)) { joyFlipX = pr.getBool("fx", false); joyFlipY = pr.getBool("fy", false); joySwap = pr.getBool("sw", false); pr.end(); }
+}
 static volatile bool  micWant;  // set by the MQTT command (txTask), read by micTask
 static volatile bool  micOn;    // micTask's actual state
 static volatile float micLevel = -99;   // dBFS, written by micTask
@@ -431,13 +461,14 @@ static void drawBrokerGlyph(int x, int y, int w, int h, int pitch, int dot, uint
   }
 }
 
-static void drawHeader(int fps, int rssi) {
+static void drawHeader(int fps, int rssi, const char *title, bool joyOn) {
   g.fillRect(0, 0, SCR_W, 76, C_PANEL);
   g.setTextSize(3); g.setTextColor(C_TXT);
-  g.drawString("Tab5 IMU", 16, 10);
+  g.drawString(title, 16, 10);
   g.setTextSize(2);
   drawWifiGlyph(262, 32, 4, 4, 2, 2, rssi);              // all within y 14..35, clear of the text line at y 46
   drawBrokerGlyph(304, 14, 24, 9, 12, 1, C_PANEL);
+  if (joyOn) { g.drawCircle(364, 26, 10, C_Y); g.drawCircle(364, 26, 9, C_Y); g.fillCircle(364, 26, 4, C_Y); }   // a joystick is connected (see the Joystick page)
   g.setTextColor(C_DIM);
   char b[64];
   snprintf(b, sizeof b, "%u msg/s", (unsigned)pubRate);
@@ -471,7 +502,8 @@ static uint8_t backlightDuty(uint8_t lvl);
 static constexpr int EDGE_PX = 40, PULL_PX = 150, MENU_H = 520;
 static constexpr int SL_X0 = 120, SL_X1 = 600, SL_Y = 150;                 // slider track, panel coordinates
 static constexpr int T_X0 = 24, T_Y0 = 214, T_W = 150, T_H = 120, T_GAP = 24;      // four icon tiles per row, two rows
-static bool  menuOpen, trackPull, swallow, dragSlider;
+static bool  menuOpen, trackPull, swallow, dragSlider, swActive;
+static int   swX0, swY0, tapX, tapY;
 static float menuP;                                                       // 0 closed .. 1 fully open
 static int   pullY0, lastX, lastY, downY;
 // While the panel is up the dashboard is frozen: it is drawn once, dimmed, and the strips under the panel are kept
@@ -559,11 +591,20 @@ static void pollTouch() {
     return;
   }
   if (!menuOpen) {
-    if (t.wasPressed()) { trackPull = t.y < EDGE_PX; pullY0 = t.y; }
+    if (t.isPressed()) { tapX = t.x; tapY = t.y; }
+    if (t.wasPressed()) { trackPull = t.y < EDGE_PX; pullY0 = t.y; swX0 = t.x; swY0 = t.y; swActive = !trackPull; }
+    else if (swActive && t.isPressed() && abs(t.x - swX0) >= 170 && abs(t.y - swY0) < 150) {   // a sideways swipe changes the page
+      page = (t.x < swX0) ? 1 : 0; swActive = false; swallow = true;
+      Serial.printf("touch: page %d\n", page);
+    }
     else if (trackPull && t.isPressed() && t.y - pullY0 > PULL_PX) {
       if (!bgCache) { Serial.println("touch: no cache memory, panel disabled"); trackPull = false; return; }
       menuOpen = true; menuP = 0; bgReady = false; menuDirty = true; trackPull = false; swallow = true;
       Serial.println("touch: quick settings opened");
+    }
+    if (t.wasReleased() && swActive) {                        // a tap (not a swipe): the Joystick page has three buttons
+      swActive = false;
+      if (abs(tapX - swX0) < 40 && abs(tapY - swY0) < 40) joyTileTap(tapX, tapY);
     }
     if (!t.isPressed()) trackPull = false;
     return;
@@ -668,6 +709,96 @@ static void drawMenuFrame(const Snap &s) {
   }
 }
 
+// ---------- joystick page (drawTask only) ----------
+static constexpr int JT_Y = 1096, JT_H = 96, JT_W = 208, JT_X0 = 24, JT_GAP = 24;     // the three orientation buttons
+
+static void joyTileTap(int x, int y) {
+  if (page != 1 || y < JT_Y || y >= JT_Y + JT_H) return;
+  for (int i = 0; i < 3; i++) {
+    const int x0 = JT_X0 + i * (JT_W + JT_GAP);
+    if (x >= x0 && x < x0 + JT_W) { joyToggle(i); return; }
+  }
+}
+
+static void drawJoystickPage(const Snap &s) {
+  const JoyS &j = s.joy;
+  // the pad
+  panel(84, 640);
+  g.setTextSize(2); g.setTextColor(C_DIM);
+  g.drawString("STICK", 28, 98);
+  const int cx = 360, cy = 84 + 345, R = 250;
+  const uint16_t edge = j.pressed ? C_X : C_GRID;
+  g.drawRect(cx - R, cy - R, 2 * R, 2 * R, edge);
+  if (j.pressed) g.drawRect(cx - R + 1, cy - R + 1, 2 * R - 2, 2 * R - 2, edge);
+  g.drawCircle(cx, cy, R, C_GRID); g.drawCircle(cx, cy, R / 2, C_GRID);
+  g.drawFastHLine(cx - R, cy, 2 * R, C_GRID); g.drawFastVLine(cx, cy - R, 2 * R, C_GRID);
+  if (j.present) {
+    int px = 0, py = 0;
+    for (int k = 0; k < JTRAIL; k++) {                                 // the trail, oldest first, fading in
+      const int idx = (s.jHead - JTRAIL + k + 2 * JHIST) % JHIST;
+      const int x = cx + s.jx[idx] * R / JMAX, y = cy - s.jy[idx] * R / JMAX;
+      if (k) { const int f = 50 + k * 205 / JTRAIL; g.drawLine(px, py, x, y, g.color565(f / 3, f, f / 2)); }
+      px = x; py = y;
+    }
+    const int dx = cx + j.x * R / JMAX, dy = cy - j.y * R / JMAX;
+    if (j.pressed) { g.fillCircle(dx, dy, 30, C_X); g.drawCircle(dx, dy, 38, C_X); g.drawCircle(dx, dy, 39, C_X); }
+    else g.fillCircle(dx, dy, 20, C_Y);
+  } else {
+    g.setTextSize(3); g.setTextColor(C_DIM);
+    g.drawCenterString("No joystick found", cx, cy - 30);
+    g.setTextSize(2);
+    g.drawCenterString("Plug the I2C Joystick 2 Unit into Port A", cx, cy + 20);
+  }
+
+  // the numbers
+  panel(732, 130);
+  char b[48];
+  g.setTextSize(3);
+  g.setTextColor(C_X);  snprintf(b, sizeof b, "X %+4d%%", j.present ? j.x / 10 : 0);  g.drawString(b, 28, 748);
+  g.setTextColor(C_Y);  snprintf(b, sizeof b, "Y %+4d%%", j.present ? j.y / 10 : 0);  g.drawString(b, 260, 748);
+  g.setTextSize(2); g.setTextColor(C_DIM);
+  snprintf(b, sizeof b, "raw %+5d", j.present ? j.rx : 0);  g.drawString(b, 28, 792);
+  snprintf(b, sizeof b, "raw %+5d", j.present ? j.ry : 0);  g.drawString(b, 260, 792);
+  g.setTextSize(3);
+  g.setTextColor(j.pressed ? C_X : C_DIM);
+  g.drawString(!j.present ? "-" : j.pressed ? "PRESSED" : "released", 492, 748);
+  g.setTextSize(2); g.setTextColor(C_DIM); g.drawString("button", 492, 792);
+
+  // the last 6 seconds
+  panel(870, 210);
+  g.setTextSize(2); g.setTextColor(C_DIM);
+  g.drawString("last 6 s", 28, 882);
+  g.setTextColor(C_X); g.drawString("X", 600, 882);
+  g.setTextColor(C_Y); g.drawString("Y", 640, 882);
+  const int hx = 24, hw = 672, hy = 910, hh = 156, mid = hy + hh / 2;
+  g.drawRect(hx, hy, hw, hh, C_GRID);
+  g.drawFastHLine(hx, mid, hw, C_GRID);
+  if (j.present) {
+    int ax = 0, ay = 0, bx = 0, by = 0;
+    for (int i = 0; i < JHIST; i += 2) {
+      const int idx = (s.jHead + i) % JHIST, sx = hx + i * (hw - 1) / (JHIST - 1);
+      const int yx = mid - s.jx[idx] * (hh / 2 - 3) / JMAX, yy = mid - s.jy[idx] * (hh / 2 - 3) / JMAX;
+      if (i) { g.drawLine(ax, ay, sx, yx, C_X); g.drawLine(bx, by, sx, yy, C_Y); }
+      ax = sx; ay = yx; bx = sx; by = yy;
+    }
+  }
+
+  // orientation buttons
+  const char *names[3] = {"Flip X", "Flip Y", "Swap X/Y"};
+  const bool on[3] = {joyFlipX, joyFlipY, joySwap};
+  for (int i = 0; i < 3; i++) {
+    const int x0 = JT_X0 + i * (JT_W + JT_GAP);
+    g.fillRoundRect(x0, JT_Y, JT_W, JT_H, 16, on[i] ? g.color565(30, 50, 100) : C_PANEL);
+    if (on[i]) g.drawRect(x0, JT_Y, JT_W, JT_H, g.color565(91, 140, 255));
+    g.setTextSize(2); g.setTextColor(C_TXT);
+    g.drawCenterString(names[i], x0 + JT_W / 2, JT_Y + 22);
+    g.setTextColor(on[i] ? g.color565(91, 140, 255) : C_DIM);
+    g.drawCenterString(on[i] ? "on" : "off", x0 + JT_W / 2, JT_Y + 54);
+  }
+  g.setTextSize(2); g.setTextColor(C_DIM);
+  g.drawCenterString("Swipe right for the dashboard", SCR_W / 2, 1218);
+}
+
 // Opening the panel: do not re-render the dashboard. Read the picture that is already on the screen back from the
 // panel framebuffer, halve every pixel's brightness (RGB565: shift right one and mask the bits that crossed fields,
 // two pixels per 32-bit word), keep the strips the panel will cover, and push them all back.
@@ -699,11 +830,13 @@ static void draw(const Snap &s, int fps) {
     pollTouch();                                 // between strips: keeps touch responsive at ~13 fps
     g.oy = y;
     canvas.fillSprite(C_BG);
-    drawHeader(fps, s.pw.rssi);
-    drawScope(s, y1, h1);
-    drawDials(s, y2, h2);
-    drawLinear(s, y3, h3);
-    drawPower(s, y4, h4);
+    drawHeader(fps, s.pw.rssi, page ? "Joystick" : "Tab5 IMU", s.joy.present);
+    if (page == 0) {
+      drawScope(s, y1, h1);
+      drawDials(s, y2, h2);
+      drawLinear(s, y3, h3);
+      drawPower(s, y4, h4);
+    } else drawJoystickPage(s);
     canvas.pushSprite(0, y);
   }
 }
@@ -863,6 +996,55 @@ static void powerTask(void *) {
   }
 }
 
+// ---------- joystick ----------
+// M5Stack I2C Joystick 2 Unit on Port A (external I2C: SCL GPIO54, SDA GPIO53, a hardware port of its own, so it cannot
+// disturb the internal bus). Registers: 0x20 button (0 = pressed), 0x50 calibrated x and y as signed 16-bit little-endian
+// (-4095..4095, 0 at rest, with a dead zone around the centre). 50 Hz while awake, 25 per second sent; 2 Hz in sleep mode.
+// The unit can be plugged in or out while running: it is looked for every 2 s, and lost after 5 failed reads.
+static void joyTask(void *) {
+  Serial.printf("joystick task on core %d\n", xPortGetCoreID());
+  M5.Ex_I2C.begin();                                   // M5Unified starts the external bus only when an external RTC/IMU is enabled
+  bool present = false, announced = false;
+  int fails = 0;
+  uint32_t lastScan = 0, tick = 0;
+  TickType_t last = xTaskGetTickCount();
+  for (;;) {
+    const bool slow = rateSlow;
+    JoyS j = {millis(), 0, 0, 0, 0, false, present};
+    if (!present) {
+      if (millis() - lastScan > 2000) {
+        lastScan = millis();
+        if (M5.Ex_I2C.scanID(JOY_ADDR, 100000)) { present = true; fails = 0; Serial.println("joystick: found at 0x63"); }
+      }
+    } else {
+      uint8_t o[4], btn = 1;
+      if (M5.Ex_I2C.readRegister(JOY_ADDR, 0x50, o, 4, 400000) && M5.Ex_I2C.readRegister(JOY_ADDR, 0x20, &btn, 1, 400000)) {
+        fails = 0;
+        int x = (int16_t)(o[0] | (o[1] << 8)), y = (int16_t)(o[2] | (o[3] << 8));
+        x = x < -JRAW ? -JRAW : x > JRAW ? JRAW : x;  y = y < -JRAW ? -JRAW : y > JRAW ? JRAW : y;
+        if (joySwap) { const int t = x; x = y; y = t; }
+        if (joyFlipX) x = -x;
+        if (joyFlipY) y = -y;
+        // The stick moves in a circle but the unit clips each axis on its own, so a full push gave 4095 along an axis and up to
+        // about 4700 on a diagonal. Scale by 4095 and clamp the vector's length to 1: a full push is 100 % in every direction.
+        float fx = x / (float)JRAW, fy = y / (float)JRAW;
+        const float m = sqrtf(fx * fx + fy * fy);
+        if (m > 1.0f) { fx /= m; fy /= m; }
+        j.x = (int)lroundf(fx * JMAX); j.y = (int)lroundf(fy * JMAX); j.rx = x; j.ry = y; j.pressed = btn == 0;
+      } else if (++fails >= 5) { present = false; j.present = false; Serial.println("joystick: lost"); }
+    }
+    j.present = present;
+    xSemaphoreTake(mtx, portMAX_DELAY);
+    live.joy = j;
+    live.jx[live.jHead] = (int16_t)j.x; live.jy[live.jHead] = (int16_t)j.y;
+    live.jHead = (live.jHead + 1) % JHIST;
+    xSemaphoreGive(mtx);
+    if (present != announced) { announced = present; xQueueSend(joyQ, &j, 0); }       // plugged in or out: say so at once
+    else if (present && (slow || (++tick & 1) == 0)) xQueueSend(joyQ, &j, 0);
+    vTaskDelayUntil(&last, pdMS_TO_TICKS(present ? (slow ? 500 : 20) : 100));
+  }
+}
+
 // ---------- microphone ----------
 // Off by default. "mic on" / "mic off" on tab5/cmd starts/stops capture; while on, 32 ms PCM blocks go
 // to tab5/audio. The port is only opened while streaming.
@@ -977,6 +1159,10 @@ static void onMessage(char *topic, uint8_t *pl, unsigned len) {
   if (!strcmp(c, "panel off"))    panelWant = false;
   int mhz;
   if (sscanf(c, "cpu %d", &mhz) == 1 && mhz >= 0 && mhz <= 360) cpuWant = mhz;
+  if (!strcmp(c, "joy flipx"))  joyToggle(0);
+  if (!strcmp(c, "joy flipy"))  joyToggle(1);
+  if (!strcmp(c, "joy swap"))   joyToggle(2);
+  if (!strcmp(c, "joy reset"))  joyToggle(3);
   if (!strcmp(c, "mic off"))    micWant = false;
   if (!strcmp(c, "screen on"))  scrWant = 1;
   if (!strcmp(c, "screen off")) scrWant = 0;
@@ -993,6 +1179,13 @@ static void publishPower(const PowerS &p) {
     (unsigned long)p.t, p.v, p.i, p.p, p.soc, p.chg, p.tImu, p.tChip, p.rssi, (unsigned long)p.heap, p.mic,
     p.avg, p.wh, p.eta, p.scr, p.bri, p.slp);
   if (n > 0 && mqtt.publish(MQTT_TOPIC_POWER, b)) pubTotal++;
+}
+
+static void publishJoy(const JoyS &j) {
+  char b[160];
+  int n = snprintf(b, sizeof b, "{\"t\":%lu,\"ok\":%d,\"x\":%.1f,\"y\":%.1f,\"rx\":%d,\"ry\":%d,\"b\":%d,\"fx\":%d,\"fy\":%d,\"sw\":%d}",
+                   (unsigned long)j.t, j.present ? 1 : 0, j.x / 10.0f, j.y / 10.0f, j.rx, j.ry, j.pressed ? 1 : 0, (int)joyFlipX, (int)joyFlipY, (int)joySwap);
+  if (n > 0 && mqtt.publish(MQTT_TOPIC_JOY, b)) pubTotal++;
 }
 
 // A slow connect only delays this task; samples are dropped, not backlogged.
@@ -1048,6 +1241,8 @@ static void txTask(void *) {
     if (xQueueReceive(sampleQ, &m, pdMS_TO_TICKS(rateSlow ? 100 : 10)) == pdTRUE && mqttUp) publish(m);
     PowerS pw;
     while (xQueueReceive(powerQ, &pw, 0) == pdTRUE) if (mqttUp) publishPower(pw);
+    JoyS jy;
+    while (xQueueReceive(joyQ, &jy, 0) == pdTRUE) if (mqttUp) publishJoy(jy);
     static AudioChunk ac;
     while (xQueueReceive(audioQ, &ac, 0) == pdTRUE) if (mqttUp && mqtt.publish(MQTT_TOPIC_AUDIO, (const uint8_t *)ac.pcm, sizeof ac.pcm)) pubTotal++;
     uint32_t now = millis();
@@ -1107,6 +1302,8 @@ void setup() {
   sampleQ = xQueueCreate(64, sizeof(Sample));
   powerQ  = xQueueCreate(16, sizeof(PowerS));
   audioQ  = xQueueCreate(6, sizeof(AudioChunk));
+  joyQ    = xQueueCreate(8, sizeof(JoyS));
+  joyLoad();
   i2cMtx  = xSemaphoreCreateMutex();
   clkMtx  = xSemaphoreCreateMutex();
 
@@ -1116,6 +1313,7 @@ void setup() {
   xTaskCreatePinnedToCore(txTask,     "mqtt",   8192,  nullptr, 2, nullptr, CORE_IO);
   xTaskCreatePinnedToCore(powerTask,  "power",  6144,  nullptr, 2, nullptr, CORE_IO);
   xTaskCreatePinnedToCore(micTask,    "mic",    6144,  nullptr, 2, nullptr, CORE_IO);
+  xTaskCreatePinnedToCore(joyTask,    "joy",    4096,  nullptr, 2, nullptr, CORE_IO);
 }
 
 void loop() { vTaskDelete(nullptr); }              // all work lives in the pinned tasks
