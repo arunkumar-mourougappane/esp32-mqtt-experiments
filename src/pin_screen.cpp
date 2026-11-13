@@ -81,7 +81,7 @@ bool pinScreenRun(const char *notice) {
     if (lockedUntil) {                                      // locked: show the wait, ignore the keypad except Cancel
       if (now - lastTick >= 500) {
         lastTick = now;
-        if ((int32_t)(lockedUntil - now) <= 0) { lockedUntil = 0; status("You can try again.", cDim); }
+        if ((int32_t)(lockedUntil - now) <= 0) { lockedUntil = 0; lastTouch = now; status("You can try again.", cDim); }   // the idle timer restarts here
         else { char b[48]; uint32_t s = (lockedUntil - now + 999) / 1000; snprintf(b, sizeof b, "Too many tries. Wait %u s.", (unsigned)s); status(b, cBad); }
       }
     }
@@ -108,7 +108,7 @@ bool pinScreenRun(const char *notice) {
         }
       }
     }
-    if (now - lastTouch > 60000) return false;              // nobody is there
+    if (!lockedUntil && now - lastTouch > 60000) return false;   // nobody is there (not counted while the keypad is locked)
     delay(15);
   }
 }
