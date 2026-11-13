@@ -15,6 +15,8 @@ static WebServer web(80);
 static DNSServer dns;
 
 static String apSsid, apPass;
+static uint32_t logT0;                                   // when setup mode started; every setup log line is relative to it
+#define SLOG(fmt, ...) Serial.printf("[setup +%6lu ms] " fmt "\n", (unsigned long)(millis() - logT0), ##__VA_ARGS__)
 static volatile int phones;                       // from Wi-Fi events: softAPgetStationNum() is a call into the C6 and can block
 static uint32_t startedAt, timeoutMs_;
 static bool rerun_;
@@ -43,7 +45,15 @@ static void head(const char *title, const char *sub) {
   M5.Display.drawString(title, 360, 60);
   M5.Display.setFont(&fonts::DejaVu24);
   M5.Display.setTextColor(cDim, cBg);
-  if (sub) M5.Display.drawString(sub, 360, 124);
+  if (!sub) return;
+  std::string t = sub;
+  if (t.size() <= 34) { M5.Display.drawString(sub, 360, 124); return; }            // fits on one line in the 24-point font
+  // A long reason (for example why setup opened again) does not fit: two lines in the smaller font, split at a space.
+  size_t cut = t.rfind(' ', 44);
+  if (cut == std::string::npos || cut < 10) cut = 44;
+  M5.Display.setFont(&fonts::DejaVu18);
+  M5.Display.drawString(t.substr(0, cut).c_str(), 360, 120);
+  if (cut < t.size()) M5.Display.drawString(t.substr(t.find_first_not_of(' ', cut)).c_str(), 360, 152);
 }
 
 static void footerLine(const char *text, uint16_t dot) {
@@ -74,8 +84,8 @@ static void drawScan(const char *notice) {
   M5.Display.drawString(apSsid, 650, 775);   M5.Display.drawString(apPass, 650, 845);
   M5.Display.setFont(&fonts::DejaVu18);
   M5.Display.setTextDatum(top_center); M5.Display.setTextColor(cDim, cBg);
-  M5.Display.drawString("The setup page opens by itself. If it does not,", 360, 925);
-  M5.Display.drawString("go to 192.168.4.1 in your browser.", 360, 957);
+  M5.Display.drawString("The sign-in page can take up to a minute to open by itself.", 360, 925);
+  M5.Display.drawString("To skip the wait, open 192.168.4.1 in your browser.", 360, 957);
   timeLeftLine("Waiting for your phone. Closes in");
 }
 
@@ -127,6 +137,7 @@ static void startScan() {
   WiFi.scanDelete();
   WiFi.scanNetworks(true);                         // asynchronous
   scanning = true; scanStarted = millis();
+  SLOG("scan started (the radio leaves the access point channel while it scans)");
 }
 
 static void harvestScan() {
@@ -134,6 +145,7 @@ static void harvestScan() {
   int n = WiFi.scanComplete();
   if (n == WIFI_SCAN_RUNNING) { if (millis() - scanStarted > 15000) scanning = false; return; }
   scanning = false;
+  SLOG("scan finished: %d networks", n);
   JsonDocument doc;
   JsonArray arr = doc.to<JsonArray>();
   for (int i = 0; i < n && arr.size() < 20; i++) {
@@ -195,9 +207,14 @@ static String errJson(const char *msg) {
   String s; serializeJson(d, s); return s;
 }
 
-static void handleRoot() { web.send_P(200, "text/html", PORTAL_PAGE); }
+static void handleRoot() {
+  SLOG("GET / (%s)", web.hostHeader().c_str());
+  web.send_P(200, "text/html", PORTAL_PAGE);
+  SLOG("page sent");
+}
 
 static void handleState() {
+  SLOG("GET /api/state");
   std::string s = prov::summaryJson();
   uint32_t left = timeoutMs_ > millis() - startedAt ? (timeoutMs_ - (millis() - startedAt)) / 1000 : 0;
   s.insert(s.size() - 1, std::string(",\"rerun\":") + (rerun_ ? "true" : "false") + ",\"left\":" + std::to_string(left));
@@ -205,6 +222,7 @@ static void handleState() {
 }
 
 static void handleScan() {
+  SLOG("GET /api/scan");
   harvestScan();
   if (!scanning && millis() - scanStarted > 20000) startScan();
   String out = String("{\"scanning\":") + (scanning ? "true" : "false") + ",\"nets\":" + scanJson + "}";
@@ -305,14 +323,20 @@ static void handleSave() {
   drawDone();
 }
 
-static void handleAny() {                                // captive-portal probes (generate_204, hotspot-detect, ...)
+// Captive-portal probes from the phone (hotspot-detect.html, generate_204, connecttest.txt, ...) and anything else unknown:
+// redirect to the setup page. On an iPhone the sign-in sheet then opens by itself after 35 to 60 seconds (measured over
+// four joins, by QR code and by hand): the page is served about 3 seconds after joining, so the wait is inside iOS.
+// Several variants were tried and made no difference: a DHCP option 114 with a JSON answer, and a tiny probe reply.
+static void handleAny() {
+  SLOG("probe %s%s -> redirect", web.hostHeader().c_str(), web.uri().c_str());
   web.sendHeader("Location", "http://192.168.4.1/", true);
   web.send(302, "text/plain", "");
 }
 
 static void onWifiEvent(arduino_event_id_t e, arduino_event_info_t) {
-  if (e == ARDUINO_EVENT_WIFI_AP_STACONNECTED) phones = phones + 1;
-  else if (e == ARDUINO_EVENT_WIFI_AP_STADISCONNECTED && phones > 0) phones = phones - 1;
+  if (e == ARDUINO_EVENT_WIFI_AP_STACONNECTED) { phones = phones + 1; SLOG("phone joined the Wi-Fi network"); }
+  else if (e == ARDUINO_EVENT_WIFI_AP_STADISCONNECTED) { if (phones > 0) phones = phones - 1; SLOG("phone left"); }
+  else if (e == ARDUINO_EVENT_WIFI_AP_STAIPASSIGNED) SLOG("phone was given an address");
 }
 
 // ---------- main loop ----------
@@ -327,7 +351,8 @@ void setupModeRun(bool rerun, uint32_t timeoutMs, const char *notice) {
   rerun_ = rerun; timeoutMs_ = timeoutMs;
   for (;;) {                                             // loops only for a first run whose time ran out
     phones = 0; savedAt = 0; scanning = false; scanJson = "[]"; scanStarted = 0;
-    startedAt = millis();
+    startedAt = millis(); logT0 = startedAt;
+    SLOG("setup mode starts (chip has been up %lu ms)", (unsigned long)startedAt);
     uint8_t mac[6]; esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
     char ssid[24]; snprintf(ssid, sizeof ssid, "Tab5-Setup-%02X%02X", mac[4], mac[5]);
     char pw[10]; randomPassword(pw);
@@ -337,6 +362,7 @@ void setupModeRun(bool rerun, uint32_t timeoutMs, const char *notice) {
     WiFi.mode(WIFI_AP_STA);                              // STA side only so the Tab5 can scan for networks
     bool ok = WiFi.softAP(apSsid.c_str(), apPass.c_str(), 6, 0, 2);
     Serial.printf("setup: access point %s %s, address %s\n", apSsid.c_str(), ok ? "up" : "FAILED", WiFi.softAPIP().toString().c_str());
+    SLOG("access point %s", ok ? "up" : "FAILED");
     dns.start(53, "*", WiFi.softAPIP());
     web.on("/", handleRoot);
     web.on("/api/state", handleState);
@@ -346,13 +372,15 @@ void setupModeRun(bool rerun, uint32_t timeoutMs, const char *notice) {
     web.onNotFound(handleAny);
     web.begin();
     startScan();
-    drawScan(notice);
+    uint32_t d0 = millis(); drawScan(notice); SLOG("first screen drawn (%lu ms)", (unsigned long)(millis() - d0));
 
     int shown = -1;                                       // 0 scan screen, 1 joined screen
     uint32_t lastSecond = 0;
     for (;;) {
       dns.processNextRequest();
+      uint32_t h0 = millis();
       web.handleClient();
+      if (millis() - h0 > 100) SLOG("web.handleClient() blocked the loop for %lu ms", (unsigned long)(millis() - h0));
       harvestScan();
       uint32_t now = millis();
 
@@ -362,7 +390,7 @@ void setupModeRun(bool rerun, uint32_t timeoutMs, const char *notice) {
         continue;
       }
       int want = phones > 0 ? 1 : 0;
-      if (want != shown) { shown = want; if (want) { drawJoined(); } else { drawScan(notice); } lastSecond = now; }
+      if (want != shown) { shown = want; uint32_t d1 = millis(); if (want) { drawJoined(); } else { drawScan(notice); } lastSecond = now; SLOG("screen redrawn (%lu ms)", (unsigned long)(millis() - d1)); }
       if (now - lastSecond >= 1000) {
         lastSecond = now;
         if (!shown) timeLeftLine("Waiting for your phone. Closes in");
