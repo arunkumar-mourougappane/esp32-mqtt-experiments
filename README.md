@@ -12,22 +12,6 @@ Firmware for the M5Stack Tab5 (ESP32-P4, with an ESP32-C6 coprocessor that provi
 A browser dashboard (`viewer/`) shows the stream, plots it, controls the Tab5 and plays the microphone.
 Scripts under `broker/` set up a local Mosquitto broker, and scripts under `tools/` test the whole chain.
 
-## Contents
-
-| Path | What it is |
-|---|---|
-| `src/main.cpp` | The firmware: tasks for sampling, drawing, power, microphone and MQTT; the quick-settings panel |
-| `src/prov.*` | Stored settings: encrypted Wi-Fi/broker secrets, certificates, the PIN and its lockout |
-| `src/setup_mode.*`, `src/portal_page.h` | First-run setup: the Tab5's own Wi-Fi network, QR code, and the setup page served to your phone |
-| `src/pin_screen.*` | The PIN keypad shown before "set up again" |
-| `broker/` | Mosquitto config, access lists, and the scripts that create certificates (`setup-tls.sh`, `issue-device-cert.sh`) and start the broker; `broker/provision/` holds the files you upload on the setup page |
-| `docs/SETUP.md` | Step-by-step setup, from the broker to the dashboard, with a picture per screen |
-| `docs/mockups.md` | The design mockups of the Tab5 and setup-page screens |
-| `viewer/index.html` | The dashboard: cards (battery power, acceleration, rotation rate, and a joystick card only while a unit is detected) that fill the window so nothing scrolls, and fall back to one scrolling column on a narrow or short window. Opens straight from disk; no server needed |
-| `tools/endurance.py` | Long-running health test of the whole chain |
-| `tools/powerbench.py` | Measures what each part of sleep mode saves, from the battery sensor |
-| `spike/` | Test builds: `provtest` (storage self-test), `setuptest` (setup mode on its own), `joytest` (the joystick unit's raw values), `spike` (the feasibility experiment) |
-
 ## Hardware
 
 - M5Stack Tab5. The board definition (`m5stack-tab5-p4`) targets the "ES pre rev.300" P4 silicon.
