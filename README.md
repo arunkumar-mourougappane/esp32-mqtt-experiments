@@ -21,10 +21,10 @@ Scripts under `broker/` set up a local Mosquitto broker, and scripts under `tool
 | `src/setup_mode.*`, `src/portal_page.h` | First-run setup: the Tab5's own Wi-Fi network, QR code, and the setup page served to your phone |
 | `src/pin_screen.*` | The PIN keypad shown before "set up again" |
 | `broker/` | Mosquitto config, access lists, and the scripts that create certificates (`setup-tls.sh`, `issue-device-cert.sh`) and start the broker; `broker/provision/` holds the files you upload on the setup page |
-| `viewer/index.html` | The dashboard. Opens straight from disk; no server needed |
+| `viewer/index.html` | The dashboard: four cards (battery power, acceleration, rotation rate, joystick) that fill the window so nothing scrolls, and fall back to one scrolling column on a narrow or short window. Opens straight from disk; no server needed |
 | `tools/endurance.py` | Long-running health test of the whole chain |
 | `tools/powerbench.py` | Measures what each part of sleep mode saves, from the battery sensor |
-| `spike/` | Test builds: `provtest` (storage self-test), `setuptest` (setup mode on its own), `spike` (the feasibility experiment) |
+| `spike/` | Test builds: `provtest` (storage self-test), `setuptest` (setup mode on its own), `joytest` (the joystick unit's raw values), `spike` (the feasibility experiment) |
 
 ## Hardware
 
@@ -32,6 +32,7 @@ Scripts under `broker/` set up a local Mosquitto broker, and scripts under `tool
 - Battery: the firmware assumes the 2S NP-F550 pack (2000 mAh, 7.4 V, 14.8 Wh) for stored energy and time left. Change `BAT_WH` in `src/main.cpp` if you fit another battery.
 - The INA226 sits on the battery path. On USB it shows charge current; on battery it shows what the whole tablet draws.
 - Wi-Fi is 2.4 GHz only (the C6).
+- Optional: an [M5Stack I2C Joystick 2 Unit](https://shop.m5stack.com/products/i2c-joystick-2-unit-stm32g030) (STM32G030, I2C address 0x63) on Port A, the Tab5's Grove connector (SCL GPIO54, SDA GPIO53, 5 V). It can be plugged in or out while the Tab5 runs.
 
 ## Setup
 
@@ -111,11 +112,19 @@ Measured on battery (USB unplugged), the battery draw goes from about 1.8 W awak
 
 The display panel is deliberately left awake. The Tab5's ST7123 is a combined display and touch controller, so putting the panel to sleep also switches off touch and nothing could wake the screen by touch. Panel sleep would save another 0.17 W, but then only the `wake` command could end sleep.
 
+### Joystick
+
+With a Joystick 2 Unit on Port A, swipe sideways (left) on the dashboard to open the **Joystick** page, and swipe right to go back. It shows a pad with a dot and a fading trail of the last 0.8 s, a red highlight while the stick is pressed, the X and Y readings, and a 6-second history chart. A small green joystick symbol in the dashboard header shows that a unit is connected. Without one, the page says "No joystick found".
+
+- **Scale:** the unit clips each axis at 4095 on its own, but the stick moves in a circle, so a full push read 4095 along an axis and up to about 4700 on a diagonal. The firmware scales by 4095 and clamps the length of the stick vector to 1, so a full push in any direction is exactly **100%**. X and Y are published in percent, -100.0 to +100.0. The unit's own calibrated values stay available as `rx` and `ry` (-4095 to +4095).
+- **Orientation:** which way is "up" depends on how the unit is held. Three buttons on the page (and in the viewer) fix it: Flip X, Flip Y and Swap X/Y, remembered across restarts. Hold the unit with its cable toward you: pushing away from you should move the dot up.
+- **Sleep mode** polls the unit at 2 Hz and sends 2 readings per second; awake it is read at 50 Hz and 25 readings per second are sent.
+
 ### First-run setup
 
 With nothing stored, the Tab5 shows a QR code and opens its own Wi-Fi network (`Tab5-Setup-xxxx`, with a random password shown on screen).
 
-1. Scan the QR code with your phone. It joins the network and the setup page opens by itself; if it does not, go to `192.168.4.1`.
+1. Scan the QR code with your phone and join the network. The setup page can open by itself as a sign-in sheet, but on an iPhone that took 35 to 60 seconds in every try (by QR code and by hand), although the Tab5 serves the page about 3 seconds after the phone joins; the wait is inside iOS. To skip it, open `192.168.4.1` in the browser right after joining.
 2. Fill in the five steps: **Wi-Fi** (pick from the scanned list, or type the name), **Broker** (address, port, and how to sign in), **Certificates**, **PIN**, then **Check and save**.
 3. For the broker you choose one of two ways to sign in: **username and password** (port 8883, needs the CA certificate) or **device certificate** (port 8884, needs the CA certificate, a device certificate and its key, from `broker/issue-device-cert.sh`; copy the three files in `broker/provision/` to your phone, for example by AirDrop). Each certificate can be chosen as a file or pasted as text; the Tab5 checks it and tells you what it found (name, key type, expiry). For the device certificate it also checks that the key belongs to it and that the CA issued it.
 4. Save. The Tab5 shows "Setup complete" and restarts onto the new settings.
@@ -163,6 +172,7 @@ The esp-hosted link to the C6 can wedge, after which TLS cannot get enough inter
 | `tab5/imu` | Tab5 to broker | JSON: `t` (ms), `ax ay az` (g), `gx gy gz` (deg/s), `roll pitch yaw` (deg). 50/s awake, 2/s asleep |
 | `tab5/power` | Tab5 to broker | JSON, 10/s awake, 1/s asleep: `t v i p soc chg t_imu t_chip rssi heap mic avg wh eta scr bri slp`. `i` and `p` are positive when charging; `chg` is 1 charging, 0 idle, -1 discharging; `eta` is minutes to empty or full, -1 if not meaningful |
 | `tab5/audio` | Tab5 to broker | Raw 16-bit mono PCM at 16 kHz in 1024-byte blocks, only while the microphone is on |
+| `tab5/joy` | Tab5 to broker | JSON, 25/s awake, 2/s asleep, and at once when the unit is plugged in or out: `t ok x y rx ry b fx fy sw`. `ok` is 1 when a unit is connected; `x`, `y` are -100.0 to +100.0 (percent of a full push, after the orientation switches); `rx`, `ry` are the unit's calibrated -4095 to +4095; `b` is 1 while the stick is pressed; `fx fy sw` are the orientation switches |
 | `tab5/cmd` | broker to Tab5 | Text commands, below |
 
 Commands:
@@ -173,6 +183,7 @@ Commands:
 | `brightness 0-255` | Set the brightness |
 | `mic on` / `mic off` | Start or stop microphone streaming (ignored in sleep) |
 | `sleep` / `wake` | Enter or leave sleep mode |
+| `joy flipx`, `joy flipy`, `joy swap`, `joy reset` | Toggle an orientation switch of the joystick, or put all three back to off |
 | `rates slow` / `rates normal`, `ps on` / `ps off`, `panel on` / `panel off`, `cpu <MHz>` | The individual parts of sleep mode, for measuring. The CPU clock only changes while the screen is off. `panel on` puts the display panel to sleep, which also disables touch, so only `wake` can end sleep then |
 
 The access lists let a device (either sign-in method) use only `tab5/#`. The viewer's access list lets it read `tab5/#` and write only `tab5/cmd`.
@@ -182,6 +193,9 @@ The access lists let a device (either sign-in method) use only `tab5/#`. The vie
 Close the browser viewer first for both tools; anything else publishing to `tab5/cmd` interferes.
 
 ```
+# the joystick unit on Port A: scans the bus and prints its raw values (a test build, not the dashboard)
+pio run -e joytest -t upload
+
 # the settings storage on the device: encryption, tamper checks, "secrets are not in flash", PIN and lockout (about 3 minutes)
 pio run -e provtest -t upload          # then read the serial port; it prints PASS or FAIL for each check
 
@@ -207,7 +221,10 @@ tools/.venv/bin/python tools/powerbench.py --cpus 180,90,40     # real sleep mod
 
 ## Roadmap
 
-- Not yet tested: Android's captive-portal check on the setup network, a large (multi-KB) certificate pasted on the setup page, and the setup page's refusals for a key that does not belong to the certificate or a certificate from another CA.
+- Tried on the device: the setup page's refusals (a non-key, a non-certificate, a non-text file, a key that does not belong to the certificate, a certificate from another CA), a 4.8 KB certificate bundle pasted (accepted) and a 12 KB one (refused as too large), the PIN lockout (five wrong PINs, the countdown, a retry after the wait locks again, the right PIN opens setup), and settings with a wrong Wi-Fi password (setup reopens behind the PIN after about 90 s with the reason, and recovers once the right password is saved).
+- Checked only by reading the code: the "broker refused the login" and "could not reach the broker" messages (the Wi-Fi one was seen), and that the PIN lock survives a restart (while the failure count is 5 or more, every restart locks the keypad for a minute until one right PIN resets it).
+- Not tested: Android's captive-portal check on the setup network (there was no Android phone; the Tab5 redirects every unknown address to the setup page, which is the standard signal), and the erase-and-reflash recovery for a forgotten PIN.
+- Known limit: the Tab5 waits for the clock (NTP) before it tries the broker, so on a network without internet a failed first connection would be reported as "could not reach the broker".
 - Certificate sign-in is built and was tried end to end (the Tab5 connects on 8884 and the broker records it as `tab5-device`), but there is no way yet to revoke a single device certificate other than replacing the CA.
 
 `spike/spike.cpp` is the throwaway firmware that first confirmed the access point, captive page, form posts and touch work on this hardware. Build it with `pio run -e spike -t upload`; a plain `pio run` still builds the real firmware.
