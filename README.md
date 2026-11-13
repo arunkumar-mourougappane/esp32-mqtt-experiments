@@ -21,6 +21,8 @@ Scripts under `broker/` set up a local Mosquitto broker, and scripts under `tool
 | `src/setup_mode.*`, `src/portal_page.h` | First-run setup: the Tab5's own Wi-Fi network, QR code, and the setup page served to your phone |
 | `src/pin_screen.*` | The PIN keypad shown before "set up again" |
 | `broker/` | Mosquitto config, access lists, and the scripts that create certificates (`setup-tls.sh`, `issue-device-cert.sh`) and start the broker; `broker/provision/` holds the files you upload on the setup page |
+| `docs/SETUP.md` | Step-by-step setup, from the broker to the dashboard, with a picture per screen |
+| `docs/mockups.md` | The design mockups of the Tab5 and setup-page screens |
 | `viewer/index.html` | The dashboard: cards (battery power, acceleration, rotation rate, and a joystick card only while a unit is detected) that fill the window so nothing scrolls, and fall back to one scrolling column on a narrow or short window. Opens straight from disk; no server needed |
 | `tools/endurance.py` | Long-running health test of the whole chain |
 | `tools/powerbench.py` | Measures what each part of sleep mode saves, from the battery sensor |
@@ -36,51 +38,16 @@ Scripts under `broker/` set up a local Mosquitto broker, and scripts under `tool
 
 ## Setup
 
-You need PlatformIO, Podman (for the broker) and Python 3.
+Full step-by-step instructions, with a picture for each screen, are in **[docs/SETUP.md](docs/SETUP.md)**. In short, you need PlatformIO, Podman and Python 3, then:
 
-1. **Create the broker certificates and credentials** (one time; re-run if the Mac's LAN address changes, because the certificate is bound to it):
+```
+broker/setup-tls.sh      # 1. certificates and the broker password (one time)
+broker/run.sh            # 2. start the broker
+pio run -t upload        # 3. build and flash the Tab5 (use the pio on your PATH, not the one in ~/.platformio/penv)
+```
 
-   ```
-   broker/setup-tls.sh                          # or: broker/setup-tls.sh <broker-ip>
-   broker/setup-tls.sh --password <password>    # optional: choose the broker password instead of a random one
-   ```
-
-   This creates a private CA, a server certificate, and the MQTT user `tab5` with a random password (or the one you give). It writes `include/mqtt_creds.h` for the test tools and puts the public CA certificate in `broker/provision/ca.crt`, the file you upload on the Tab5's setup page. Nothing here is committed. A short password is fine for testing, but the broker listens on your LAN, so use a random one for real.
-
-   To sign in with a certificate instead of a password, also issue a device certificate:
-
-   ```
-   broker/issue-device-cert.sh [name]           # default name: tab5-device
-   ```
-
-   This makes a new key and a certificate for the Tab5, signed by the same CA, in `broker/provision/` (`tab5.crt` and `tab5.key`, with `ca.crt` copied beside them). The name becomes the MQTT username. The key is not encrypted, so treat the folder like a password; it is git-ignored. Re-running makes a new pair.
-
-2. **Start the broker**:
-
-   ```
-   broker/run.sh
-   ```
-
-   Port 8883 is MQTT over TLS with a username and password. Port 8884 is MQTT over TLS with a device certificate and no password: the client must present a certificate issued by the CA, and its name is used as the username (Mosquitto cannot mix the two methods on one port). Both are reachable from the LAN. Port 9001 is MQTT over WebSockets, bound to `127.0.0.1` only, read-only plus the command topic, no login (the viewer).
-
-3. **Build and flash**:
-
-   ```
-   pio run -t upload
-   ```
-
-   Use the `pio` that is on your PATH. The one inside `~/.platformio/penv` is too old for this platform and will uninstall it.
-
-4. **Set the Tab5 up from your phone.** A Tab5 with nothing stored opens first-run setup by itself (see "First-run setup" below). No network name, password or certificate is built into the firmware.
-
-5. **Open the viewer**: open `viewer/index.html` in a browser. It connects to `ws://localhost:9001`.
-
-6. **Optional, for the tools**:
-
-   ```
-   python3 -m venv tools/.venv
-   tools/.venv/bin/pip install -r tools/requirements.txt
-   ```
+4. On first start the Tab5 shows a QR code. Scan it with your phone, join its Wi-Fi and fill in the setup page (Wi-Fi, broker, certificates, PIN). No network name, password or certificate is built into the firmware.
+5. Open `viewer/index.html` in a browser. It connects to `ws://localhost:9001`.
 
 Opening the Tab5's serial port resets the board (this is how the USB serial on the P4 behaves). Expect a restart whenever a serial monitor or `--serial` opens it.
 
@@ -124,38 +91,9 @@ With a Joystick 2 Unit on Port A, swipe sideways (left) on the dashboard to open
 
 A page on the Tab5 and a card in the viewer exist only for modules that are there. The Tab5 announces what it has on `tab5/caps`; a viewer asks with the `caps` command when it connects (and again every 2 s, up to 5 times, until it gets an answer), and has a "Detect modules" button to ask again. The Tab5 also announces by itself after every connect and when a module is plugged in or out, so a joystick card appears within about a second of plugging the unit in and disappears when it is pulled out. With the joystick absent the viewer shows three cards and the rotation card takes the whole bottom row. A firmware that does not answer `caps` is handled too: the viewer then shows the joystick card only while joystick readings with a unit connected keep arriving.
 
-### First-run setup
+### Setting up again
 
-With nothing stored, the Tab5 shows a QR code and opens its own Wi-Fi network (`Tab5-Setup-xxxx`, with a random password shown on screen).
-
-1. Scan the QR code with your phone and join the network. The setup page can open by itself as a sign-in sheet, but on an iPhone that took 35 to 60 seconds in every try (by QR code and by hand), although the Tab5 serves the page about 3 seconds after the phone joins; the wait is inside iOS. To skip it, open `192.168.4.1` in the browser right after joining.
-2. Fill in the five steps: **Wi-Fi** (pick from the scanned list, or type the name), **Broker** (address, port, and how to sign in), **Certificates**, **PIN**, then **Check and save**.
-3. For the broker you choose one of two ways to sign in: **username and password** (port 8883, needs the CA certificate) or **device certificate** (port 8884, needs the CA certificate, a device certificate and its key, from `broker/issue-device-cert.sh`; copy the three files in `broker/provision/` to your phone, for example by AirDrop). Each certificate can be chosen as a file or pasted as text; the Tab5 checks it and tells you what it found (name, key type, expiry). For the device certificate it also checks that the key belongs to it and that the CA issued it.
-4. Save. The Tab5 shows "Setup complete" and restarts onto the new settings.
-
-<table>
-<tr>
-<td align="center" valign="top"><img src="docs/images/mockups/tab5-1-scan.png" alt="Design mockup of the Tab5 first-run screen with a QR code" width="260"><br>The Tab5 screen: scan the QR code</td>
-<td align="center" valign="top"><img src="docs/images/mockups/setup-1-wifi.png" alt="Design mockup of the setup page, step 1 of 5: choose your Wi-Fi" width="260"><br>The setup page on the phone, step 1 of 5</td>
-</tr>
-</table>
-
-<p align="center"><em>Design mockups. The real screens follow them; the network names are examples. All the screens, step by step, are in <a href="docs/mockups.md">docs/mockups.md</a>.</em></p>
-
-Setup closes after 10 minutes. On a first run the screen then says so and a touch starts it again. If settings that were just saved cannot join the Wi-Fi within 90 s, or reach the broker within 150 s, the Tab5 reopens setup with the reason shown (for example "The broker refused the login"). The page is plain HTTP, since there is no certificate a phone would trust for `192.168.4.1`. It is protected only by the random Wi-Fi password in the QR code, so setup only runs for a few minutes and closes once it is saved.
-
-### Set up again
-
-Swipe down for the quick-settings panel and tap the padlock tile. The Tab5 restarts and shows a PIN keypad. Cancel returns to normal running with the stored settings. The right PIN opens setup again, with the saved values filled in: saved passwords and the key show as "Unchanged" and are replaced only if you type new ones. After 5 wrong PINs the keypad locks for a minute, and a restart does not skip the wait.
-
-<table>
-<tr>
-<td align="center" valign="top"><img src="docs/images/mockups/tab5-4-quick-settings.png" alt="Design mockup of the quick-settings panel" width="260"><br>Quick settings (the finished panel is icon-only; the padlock is in a second row)</td>
-<td align="center" valign="top"><img src="docs/images/mockups/tab5-6-pin.png" alt="Design mockup of the Tab5 PIN keypad" width="260"><br>The PIN keypad (the finished screen shows "Wrong PIN." or a lockout countdown instead of the "5 tries" line)</td>
-</tr>
-</table>
-
-A forgotten PIN cannot be recovered. The way back is to erase the Tab5's flash and flash it again (for example `pio run -t erase`, then `pio run -t upload`; I have not tried this on this board). That erases everything stored, so the Tab5 runs first-run setup again.
+Swipe down for the quick-settings panel and tap the padlock tile. The Tab5 restarts behind a PIN keypad, and the right PIN opens setup again with the saved values filled in. First-run setup, setting up again, a forgotten PIN and what to do when settings do not connect are all in [docs/SETUP.md](docs/SETUP.md).
 
 ### Stored settings
 
@@ -225,7 +163,7 @@ tools/.venv/bin/python tools/powerbench.py --cpus 180,90,40     # real sleep mod
 - `broker/setup-tls.sh` binds the server certificate to the Mac's LAN address. If DHCP gives the Mac a new address, re-run it, restart the broker, and set the Tab5 up again with the new address. Reserving the address on the router avoids this.
 - The broker container restarts with Podman but not after a reboot of the Podman VM; run `broker/run.sh` again.
 
-## Roadmap
+## What is tested, and what is not
 
 - Tried on the device: the setup page's refusals (a non-key, a non-certificate, a non-text file, a key that does not belong to the certificate, a certificate from another CA), a 4.8 KB certificate bundle pasted (accepted) and a 12 KB one (refused as too large), the PIN lockout (five wrong PINs, the countdown, a retry after the wait locks again, the right PIN opens setup), and settings with a wrong Wi-Fi password (setup reopens behind the PIN after about 90 s with the reason, and recovers once the right password is saved).
 - Checked only by reading the code: the "broker refused the login" and "could not reach the broker" messages (the Wi-Fi one was seen), and that the PIN lock survives a restart (while the failure count is 5 or more, every restart locks the keypad for a minute until one right PIN resets it).
