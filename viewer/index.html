@@ -36,6 +36,7 @@
   }
 
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   html { background: var(--page); }
   body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 var(--font); }
   button { font: inherit; color: inherit; cursor: pointer; }
@@ -97,7 +98,10 @@
   .seg button[aria-pressed="true"] { background: var(--wash); color: var(--ink); font-weight: 650; }
   .spacer { flex: 1; }
 
-  .board { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); gap: 14px; }
+  .board { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); gap: 14px;
+           grid-template-areas: "power accel" "gyro joy"; }
+  .board.three { grid-template-areas: "power accel" "gyro gyro"; }          /* no joystick: the last card takes the whole bottom row */
+  #sec-power { grid-area: power; } #sec-accel { grid-area: accel; } #sec-gyro { grid-area: gyro; } #sec-joy { grid-area: joy; }
   section.sheet { border: 1px solid var(--hair); border-radius: 12px; padding: 10px 14px 12px; display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
   .sh { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; min-width: 0; }
   .sh h2 { margin: 0; font-size: 15px; font-weight: 650; flex: none; }
@@ -162,7 +166,7 @@
     <div class="status" aria-live="polite">
       <div><span class="glyph" id="g-broker">·</span><span id="t-broker">Connecting to the broker</span></div>
       <div><span class="glyph" id="g-stream">·</span><span id="t-stream">Waiting for the Tab5</span></div>
-      <div><span class="glyph" id="g-joyst">·</span><span id="t-joyst">Joystick: no data yet</span></div>
+      <div id="st-joy" hidden><span class="glyph" id="g-joyst">·</span><span id="t-joyst">Joystick: no data yet</span></div>
     </div>
 
     <div class="hero">
@@ -230,16 +234,17 @@
       </div>
       <span class="spacer"></span>
       <span class="grp" id="rate"></span>
+      <button class="link" id="detect" title="Ask the Tab5 which modules it has (a joystick, for example) and show a card for each">Detect modules</button>
     </div>
 
-    <div class="board">
-    <section class="sheet">
+    <div class="board three" id="board">
+    <section class="sheet" id="sec-power">
       <div class="sh"><h2>Battery power</h2><p>Charging plots above the line, discharging below it. Measured at the battery, so it excludes power from USB.</p></div>
       <div class="chartwrap"><canvas class="chart" id="c-power" tabindex="0" role="img" aria-label="Battery power over time"></canvas></div>
       <div class="tablewrap"><table id="t-power"></table></div>
     </section>
 
-    <section class="sheet">
+    <section class="sheet" id="sec-accel">
       <div class="sh"><h2>Acceleration</h2><p>Raw, with gravity. At rest the total is 1 g.</p>
         <div class="keys" id="k-accel"></div></div>
       <div class="split">
@@ -254,7 +259,7 @@
       </div>
     </section>
 
-    <section class="sheet">
+    <section class="sheet" id="sec-gyro">
       <div class="sh"><h2>Rotation rate</h2><p>Degrees per second around each axis.</p>
         <div class="keys" id="k-gyro"></div></div>
       <div class="split">
@@ -268,7 +273,7 @@
       </div>
     </section>
 
-    <section class="sheet" id="sec-joy">
+    <section class="sheet" id="sec-joy" hidden>
       <div class="sh"><h2>Joystick</h2><p>I2C Joystick 2 Unit on Port A. Percent of a full push: 100 in any direction.</p>
         <div class="keys" id="k-joy"></div>
         <div class="seg" id="joyset" role="group" aria-label="Joystick orientation" title="Hold the unit with its cable toward you: pushing away from you should move the dot up. Changes apply on the Tab5 too.">
@@ -294,7 +299,7 @@
 <script src="mqtt.min.js"></script>
 <script>
 "use strict";
-const URL_ = "ws://localhost:9001", T_IMU = "tab5/imu", T_PWR = "tab5/power", T_AUDIO = "tab5/audio", T_CMD = "tab5/cmd", T_JOY = "tab5/joy";
+const URL_ = "ws://localhost:9001", T_IMU = "tab5/imu", T_PWR = "tab5/power", T_AUDIO = "tab5/audio", T_CMD = "tab5/cmd", T_JOY = "tab5/joy", T_CAPS = "tab5/caps";
 const $ = id => document.getElementById(id);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const MINUS = "−";
@@ -304,7 +309,7 @@ const store = { get(k, d) { try { return localStorage.getItem(k) || d; } catch {
 
 // ---------- data ----------
 const imu = [], pwr = [], joy = [];
-let pw = null, lastImu = null, imuRx = 0, pwrRx = 0, rxTimes = [], audioRx = [], lastJoy = null, joyRx = 0;
+let caps = null, capsTries = 0, pw = null, lastImu = null, imuRx = 0, pwrRx = 0, rxTimes = [], audioRx = [], lastJoy = null, joyRx = 0;
 
 function push(arr, m, keep) {
   if (arr.length && m.t < arr[arr.length - 1].t - 2000) arr.length = 0;     // device rebooted
@@ -314,12 +319,16 @@ function push(arr, m, keep) {
 
 // ---------- MQTT ----------
 const client = mqtt.connect(URL_, { reconnectPeriod: 2000 });
-client.on("connect", () => client.subscribe([T_IMU, T_PWR, T_AUDIO, T_JOY]));
+// Ask the Tab5 what it has. It answers on tab5/caps, and also announces itself on connect and when a module is plugged in
+// or out. An older firmware does not answer: then the joystick card follows the data instead (see syncModules).
+client.on("connect", () => { client.subscribe([T_IMU, T_PWR, T_AUDIO, T_JOY, T_CAPS]); client.publish(T_CMD, "caps"); capsTries = 0; });
+setInterval(() => { if (client.connected && !caps && capsTries < 5) { capsTries++; client.publish(T_CMD, "caps"); } }, 2000);
 client.on("message", (topic, payload) => {
   if (topic === T_AUDIO) return playAudio(payload);
   let m; try { m = JSON.parse(payload.toString()); } catch { return; }
   const now = performance.now();
   if (topic === T_PWR) { pw = m; pwrRx = now; push(pwr, m, 700); }
+  else if (topic === T_CAPS) { caps = new Set(m.caps || []); }
   else if (topic === T_JOY) { lastJoy = m; joyRx = now; if (m.ok) push(joy, m, 1600); }
   else { lastImu = m; imuRx = now; rxTimes.push(now); push(imu, m, 3500); }
 });
@@ -630,6 +639,7 @@ let scrOn = true, slpOn = false, briDrag = false, briSent = 0;
 const sendBri = () => client.publish(T_CMD, "brightness " + Math.round($("bri").value * 2.55));
 $("scr").onclick = () => client.publish(T_CMD, scrOn ? "screen off" : "screen on");
 $("slp").onclick = () => client.publish(T_CMD, slpOn ? "wake" : "sleep");
+$("detect").onclick = () => client.publish(T_CMD, "caps");
 $("joyset").onclick = e => { const b = e.target.closest("button"); if (b) client.publish(T_CMD, b.dataset.c); };
 $("bri").addEventListener("pointerdown", () => { briDrag = true; });
 addEventListener("pointerup", () => { briDrag = false; });
@@ -706,11 +716,21 @@ function readouts(now) {
   }
 }
 
+// ---------- modules: a card is shown only while its module exists ----------
+let joyShown = null;
+function syncModules(now) {
+  const joyOn = caps ? caps.has("joystick") : !!(lastJoy && lastJoy.ok && now - joyRx < 3000);   // no answer: follow the data
+  if (joyOn === joyShown) return;
+  joyShown = joyOn;
+  $("sec-joy").hidden = !joyOn; $("st-joy").hidden = !joyOn;
+  $("board").classList.toggle("three", !joyOn);
+}
+
 // ---------- loop ----------
 function frame(now) {
-  palette(); readouts(now);
+  palette(); syncModules(now); readouts(now);
   for (const ch of charts) drawChart(ch, now);
-  drawScope(); drawDials(); drawJoyPad(); updateTables(now);
+  drawScope(); drawDials(); if (joyShown) drawJoyPad(); updateTables(now);
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

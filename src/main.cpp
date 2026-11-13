@@ -26,6 +26,7 @@
 #define MQTT_TOPIC_POWER "tab5/power"
 #define MQTT_TOPIC_CMD   "tab5/cmd"
 #define MQTT_TOPIC_AUDIO "tab5/audio"
+#define MQTT_TOPIC_CAPS  "tab5/caps"    // what this Tab5 has right now (modules that were detected); sent on request, on connect and when it changes
 #define MQTT_TOPIC_JOY   "tab5/joy"     // M5Stack I2C Joystick 2 Unit on Port A: calibrated x, y (-4095..4095) and the button
 
 static constexpr int   HIST        = 300;     // history samples (3 s at 100 Hz)
@@ -146,7 +147,9 @@ static QueueHandle_t audioQ;    // micTask    -> txTask
 static QueueHandle_t joyQ;      // joyTask    -> txTask
 // Which way the stick points on screen depends on how the unit is held, so three switches fix it (saved in NVS).
 static volatile bool joyFlipX, joyFlipY, joySwap;
-static int page;                // 0 dashboard, 1 joystick (drawTask only)
+static int page;                // 0 dashboard, 1 joystick (drawTask only). A page exists only while its module is detected.
+static volatile bool joyPresent;                // a joystick unit answers on Port A (set by joyTask)
+static volatile bool capsPending = true;        // publish the capabilities (set on connect, on a change, and by the "caps" command)
 static void joyToggle(int which) {              // 0 flip x, 1 flip y, 2 swap axes, 3 back to the defaults
   if (which == 0) joyFlipX = !joyFlipX; else if (which == 1) joyFlipY = !joyFlipY; else if (which == 2) joySwap = !joySwap;
   else { joyFlipX = joyFlipY = joySwap = false; }
@@ -594,7 +597,7 @@ static void pollTouch() {
     if (t.isPressed()) { tapX = t.x; tapY = t.y; }
     if (t.wasPressed()) { trackPull = t.y < EDGE_PX; pullY0 = t.y; swX0 = t.x; swY0 = t.y; swActive = !trackPull; }
     else if (swActive && t.isPressed() && abs(t.x - swX0) >= 170 && abs(t.y - swY0) < 150) {   // a sideways swipe changes the page
-      page = (t.x < swX0) ? 1 : 0; swActive = false; swallow = true;
+      page = (t.x < swX0 && joyPresent) ? 1 : 0; swActive = false; swallow = true;      // the Joystick page exists only while a unit is connected
       Serial.printf("touch: page %d\n", page);
     }
     else if (trackPull && t.isPressed() && t.y - pullY0 > PULL_PX) {
@@ -818,6 +821,7 @@ static void freezeDashboard() {
 }
 
 static void draw(const Snap &s, int fps) {
+  if (page == 1 && !joyPresent) page = 0;          // the joystick was unplugged: back to the dashboard
   const int gap = 8, y1 = 84, h1 = 500;
   const int y2 = y1 + h1 + gap, h2 = 232;
   const int y3 = y2 + h2 + gap, h3 = 200;
@@ -1033,13 +1037,13 @@ static void joyTask(void *) {
         j.x = (int)lroundf(fx * JMAX); j.y = (int)lroundf(fy * JMAX); j.rx = x; j.ry = y; j.pressed = btn == 0;
       } else if (++fails >= 5) { present = false; j.present = false; Serial.println("joystick: lost"); }
     }
-    j.present = present;
+    j.present = present; joyPresent = present;
     xSemaphoreTake(mtx, portMAX_DELAY);
     live.joy = j;
     live.jx[live.jHead] = (int16_t)j.x; live.jy[live.jHead] = (int16_t)j.y;
     live.jHead = (live.jHead + 1) % JHIST;
     xSemaphoreGive(mtx);
-    if (present != announced) { announced = present; xQueueSend(joyQ, &j, 0); }       // plugged in or out: say so at once
+    if (present != announced) { announced = present; capsPending = true; xQueueSend(joyQ, &j, 0); }   // plugged in or out: say so at once
     else if (present && (slow || (++tick & 1) == 0)) xQueueSend(joyQ, &j, 0);
     vTaskDelayUntil(&last, pdMS_TO_TICKS(present ? (slow ? 500 : 20) : 100));
   }
@@ -1110,6 +1114,7 @@ static void netService() {
                                   : mqtt.connect(id.c_str(), cfg.user.c_str(), cfg.pass.c_str());
       if (ok) {
         mqtt.subscribe(MQTT_TOPIC_CMD);
+        capsPending = true;                                  // tell viewers what is here
         if (freshCfg) { prov::setFresh(false); freshCfg = false; Serial.println("prov: new settings proven, flag cleared"); }
         if (failStreak) Serial.printf("mqtt connected again after %d failed attempts\n", failStreak);
         failStreak = 0; wdRestarts = 0;
@@ -1159,6 +1164,7 @@ static void onMessage(char *topic, uint8_t *pl, unsigned len) {
   if (!strcmp(c, "panel off"))    panelWant = false;
   int mhz;
   if (sscanf(c, "cpu %d", &mhz) == 1 && mhz >= 0 && mhz <= 360) cpuWant = mhz;
+  if (!strcmp(c, "caps") || !strcmp(c, "detect")) capsPending = true;     // a viewer asks what this Tab5 has
   if (!strcmp(c, "joy flipx"))  joyToggle(0);
   if (!strcmp(c, "joy flipy"))  joyToggle(1);
   if (!strcmp(c, "joy swap"))   joyToggle(2);
@@ -1186,6 +1192,15 @@ static void publishJoy(const JoyS &j) {
   int n = snprintf(b, sizeof b, "{\"t\":%lu,\"ok\":%d,\"x\":%.1f,\"y\":%.1f,\"rx\":%d,\"ry\":%d,\"b\":%d,\"fx\":%d,\"fy\":%d,\"sw\":%d}",
                    (unsigned long)j.t, j.present ? 1 : 0, j.x / 10.0f, j.y / 10.0f, j.rx, j.ry, j.pressed ? 1 : 0, (int)joyFlipX, (int)joyFlipY, (int)joySwap);
   if (n > 0 && mqtt.publish(MQTT_TOPIC_JOY, b)) pubTotal++;
+}
+
+// What this Tab5 has right now. Modules that are always there are listed always; the joystick only while a unit answers.
+// A viewer uses this to show a card only for a module that exists, and the Tab5 screen offers a page the same way.
+static void publishCaps() {
+  char b[200];
+  int n = snprintf(b, sizeof b, "{\"t\":%lu,\"fw\":\"%s %s\",\"caps\":[\"imu\",\"power\",\"screen\",\"mic\",\"sleep\"%s]}",
+                   (unsigned long)millis(), __DATE__, __TIME__, joyPresent ? ",\"joystick\"" : "");
+  if (n > 0 && mqtt.publish(MQTT_TOPIC_CAPS, b)) pubTotal++;
 }
 
 // A slow connect only delays this task; samples are dropped, not backlogged.
@@ -1243,6 +1258,7 @@ static void txTask(void *) {
     while (xQueueReceive(powerQ, &pw, 0) == pdTRUE) if (mqttUp) publishPower(pw);
     JoyS jy;
     while (xQueueReceive(joyQ, &jy, 0) == pdTRUE) if (mqttUp) publishJoy(jy);
+    if (capsPending && mqttUp) { capsPending = false; publishCaps(); }
     static AudioChunk ac;
     while (xQueueReceive(audioQ, &ac, 0) == pdTRUE) if (mqttUp && mqtt.publish(MQTT_TOPIC_AUDIO, (const uint8_t *)ac.pcm, sizeof ac.pcm)) pubTotal++;
     uint32_t now = millis();
