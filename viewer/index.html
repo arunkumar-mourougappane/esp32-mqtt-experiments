@@ -41,11 +41,11 @@
   button { font: inherit; color: inherit; cursor: pointer; }
   :focus-visible { outline: 2px solid var(--s1); outline-offset: 2px; border-radius: 4px; }
 
-  .app { display: grid; grid-template-columns: 330px minmax(0, 1fr); min-height: 100vh; }
+  .app { display: grid; grid-template-columns: 300px minmax(0, 1fr); height: 100vh; }
 
   /* ---- device rail ---- */
-  .rail { position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto;
-          padding: 22px 22px 28px; border-right: 1px solid var(--hair); display: flex; flex-direction: column; gap: 22px; }
+  .rail { height: 100vh; overflow-y: auto; min-height: 0;
+          padding: 16px 18px 18px; border-right: 1px solid var(--hair); display: flex; flex-direction: column; gap: 14px; }
   .brand { display: flex; align-items: baseline; justify-content: space-between; }
   .brand h1 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: -.01em; }
   .link { background: none; border: 0; padding: 2px 4px; color: var(--ink-2); font-size: 13px; }
@@ -57,23 +57,24 @@
   .ok { color: var(--good); } .bad { color: var(--crit); } .wait { color: var(--warn); }
 
   .hero .lbl { color: var(--ink-2); font-size: 13px; }
-  .hero .num { font-size: 56px; line-height: 1.05; font-weight: 620; letter-spacing: -.02em; margin: 2px 0 4px; }
+  .hero .num { font-size: 44px; line-height: 1.05; font-weight: 620; letter-spacing: -.02em; margin: 2px 0 4px; }
   .hero .num small { font-size: 22px; font-weight: 500; color: var(--ink-2); margin-left: 4px; letter-spacing: 0; }
   .hero .state { font-size: 14px; color: var(--ink-2); display: flex; gap: 6px; }
 
-  .meter { margin-top: 14px; }
+  .meter { margin-top: 10px; }
   .meter .row { display: flex; justify-content: space-between; font-size: 13px; color: var(--ink-2); margin-bottom: 5px; }
   .meter .row b { color: var(--ink); font-weight: 600; }
   .bar { height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; }
   .bar i { display: block; height: 100%; border-radius: 4px; background: var(--fill); width: 0; }
   .bar i.low { background: var(--warn); } .bar i.crit { background: var(--crit); }
 
-  dl.vitals { margin: 0; display: grid; grid-template-columns: 1fr auto; row-gap: 7px; font-size: 14px; }
+  dl.vitals { margin: 0; display: grid; grid-template-columns: 1fr auto; row-gap: 4px; font-size: 13px; }
   dl.vitals dt { color: var(--ink-2); }
   dl.vitals dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; font-weight: 550; }
   dl.vitals hr { grid-column: 1 / -1; width: 100%; border: 0; border-top: 1px solid var(--hair); margin: 4px 0; }
 
-  .note { margin: -8px 0 0; color: var(--muted); font-size: 12px; max-width: 34ch; }
+  .note { margin: -4px 0 0; color: var(--muted); font-size: 11px; max-width: 34ch; }
+  @media (max-height: 1000px) { .note, .mic p { display: none; } }
   input[type=range] { width: 100%; accent-color: var(--s1); margin: 2px 0 0; }
   .screen h2 { margin: 0 0 8px; font-size: 14px; font-weight: 650; }
   .screen .meter { margin-top: 12px; }
@@ -86,9 +87,9 @@
   .btn.live .glyph { color: var(--crit); }
   .mic .meter { margin-top: 12px; }
 
-  /* ---- chart sheet ---- */
-  main { background: var(--surface); padding: 20px 32px 48px; min-width: 0; }
-  .filters { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; padding-bottom: 14px; border-bottom: 1px solid var(--hair); }
+  /* ---- the board: four cards that share the window, so nothing scrolls ---- */
+  main { background: var(--surface); padding: 14px 18px 16px; min-width: 0; min-height: 0; height: 100vh; display: flex; flex-direction: column; }
+  .filters { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; padding-bottom: 12px; }
   .filters .grp { display: flex; align-items: center; gap: 10px; color: var(--ink-2); font-size: 13px; }
   .seg { display: inline-flex; border: 1px solid var(--hair); border-radius: 8px; overflow: hidden; }
   .seg button { background: none; border: 0; padding: 5px 12px; color: var(--ink-2); }
@@ -96,34 +97,35 @@
   .seg button[aria-pressed="true"] { background: var(--wash); color: var(--ink); font-weight: 650; }
   .spacer { flex: 1; }
 
-  section.sheet { padding: 22px 0 6px; border-bottom: 1px solid var(--hair); }
-  section.sheet:last-of-type { border-bottom: 0; }
-  .sh { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 8px; }
-  .sh h2 { margin: 0; font-size: 16px; font-weight: 650; }
-  .sh p { margin: 0; color: var(--muted); font-size: 13px; }
-  .keys { display: flex; gap: 16px; margin-left: auto; font-size: 13px; color: var(--ink-2); }
+  .board { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); gap: 14px; }
+  section.sheet { border: 1px solid var(--hair); border-radius: 12px; padding: 10px 14px 12px; display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
+  .sh { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; min-width: 0; }
+  .sh h2 { margin: 0; font-size: 15px; font-weight: 650; flex: none; }
+  .sh p { margin: 0; color: var(--muted); font-size: 12px; min-width: 0; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .keys { display: flex; gap: 14px; margin-left: auto; font-size: 12px; color: var(--ink-2); flex: none; }
   .keys span { display: inline-flex; align-items: center; gap: 6px; }
   .keys i { width: 14px; height: 2px; border-radius: 1px; display: inline-block; }
+  .sh .seg button { padding: 3px 9px; font-size: 12px; }
 
-  .split { display: grid; grid-template-columns: 330px minmax(0, 1fr); gap: 28px; align-items: start; }
-  .col { min-width: 0; }
-  canvas { width: 100%; display: block; }
-  canvas.chart { height: 230px; }
-  canvas.chart.short { height: 180px; }
-  canvas.chart.tall { height: 330px; }
-  #scope { aspect-ratio: 1 / 1; max-width: 330px; }
-  #dials { height: 170px; }
-  .readrow { display: flex; gap: 18px; margin-top: 6px; font-size: 14px; font-variant-numeric: tabular-nums; flex-wrap: wrap; }
+  .split { display: flex; gap: 14px; flex: 1; min-height: 0; }
+  .col { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+  .col.side { flex: 0 0 38%; max-width: 300px; }
+  .col.side.wide { flex-basis: 46%; max-width: 380px; }
+  .col.fill { flex: 1; }
+  .chartwrap, .cwrap { position: relative; flex: 1; min-height: 0; }
+  canvas { display: block; }
+  .chartwrap canvas, .cwrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .readrow { display: flex; gap: 6px 14px; margin-top: 4px; font-size: 12px; font-variant-numeric: tabular-nums; flex-wrap: wrap; flex: none; }
   .readrow span { display: inline-flex; align-items: center; gap: 6px; }
   .readrow i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
 
   .tables .chartwrap { display: none; }
-  .tablewrap { display: none; }
+  .tablewrap { display: none; overflow: auto; flex: 1; min-height: 0; }
   .tables .tablewrap { display: block; }
-  table { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
-  th, td { text-align: right; padding: 5px 10px; border-bottom: 1px solid var(--hair); }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 4px 8px; border-bottom: 1px solid var(--hair); }
   th:first-child, td:first-child { text-align: left; }
-  th { color: var(--ink-2); font-weight: 600; }
+  th { color: var(--ink-2); font-weight: 600; position: sticky; top: 0; background: var(--surface); }
 
   #tip { position: fixed; z-index: 10; pointer-events: none; background: var(--surface); color: var(--ink);
          border: 1px solid var(--axis); border-radius: 8px; padding: 8px 10px; font-size: 13px; display: none; min-width: 120px; }
@@ -133,12 +135,19 @@
   #tip .r b { font-weight: 650; margin-left: auto; padding-left: 10px; }
   #tip .r span { color: var(--ink-2); }
 
-  @media (max-width: 1000px) {
-    .app { grid-template-columns: 1fr; }
-    .rail { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--hair); }
-    main { padding: 16px 16px 40px; }
-    .split { grid-template-columns: 1fr; }
-    #scope { margin: 0 auto; }
+  @media (max-width: 1100px), (max-height: 640px) {
+    .app { display: block; height: auto; }
+    .rail { height: auto; overflow: visible; border-right: 0; border-bottom: 1px solid var(--hair); }
+    main { display: block; height: auto; padding: 12px 12px 32px; }
+    .board { display: block; }
+    section.sheet { margin-bottom: 14px; overflow: visible; }
+    .sh { flex-wrap: wrap; }
+    .sh p { white-space: normal; }
+    .split { flex-direction: column; }
+    .col.side { flex: none; max-width: none; }
+    .chartwrap { flex: none; height: 230px; }
+    .cwrap { flex: none; height: 260px; }
+    .tablewrap { flex: none; max-height: 320px; }
   }
 </style>
 </head>
@@ -153,6 +162,7 @@
     <div class="status" aria-live="polite">
       <div><span class="glyph" id="g-broker">·</span><span id="t-broker">Connecting to the broker</span></div>
       <div><span class="glyph" id="g-stream">·</span><span id="t-stream">Waiting for the Tab5</span></div>
+      <div><span class="glyph" id="g-joyst">·</span><span id="t-joyst">Joystick: no data yet</span></div>
     </div>
 
     <div class="hero">
@@ -222,6 +232,7 @@
       <span class="grp" id="rate"></span>
     </div>
 
+    <div class="board">
     <section class="sheet">
       <div class="sh"><h2>Battery power</h2><p>Charging plots above the line, discharging below it. Measured at the battery, so it excludes power from USB.</p></div>
       <div class="chartwrap"><canvas class="chart" id="c-power" tabindex="0" role="img" aria-label="Battery power over time"></canvas></div>
@@ -232,12 +243,12 @@
       <div class="sh"><h2>Acceleration</h2><p>Raw, with gravity. At rest the total is 1 g.</p>
         <div class="keys" id="k-accel"></div></div>
       <div class="split">
-        <div class="col">
-          <canvas id="scope" role="img" aria-label="Acceleration x and y as a position on a g-force scope"></canvas>
+        <div class="col side">
+          <div class="cwrap"><canvas id="scope" role="img" aria-label="Acceleration x and y as a position on a g-force scope"></canvas></div>
           <div class="readrow" id="r-accel"></div>
         </div>
-        <div class="col">
-          <div class="chartwrap"><canvas class="chart tall" id="c-accel" tabindex="0" role="img" aria-label="Acceleration over time"></canvas></div>
+        <div class="col fill">
+          <div class="chartwrap"><canvas class="chart" id="c-accel" tabindex="0" role="img" aria-label="Acceleration over time"></canvas></div>
           <div class="tablewrap"><table id="t-accel"></table></div>
         </div>
       </div>
@@ -247,15 +258,35 @@
       <div class="sh"><h2>Rotation rate</h2><p>Degrees per second around each axis.</p>
         <div class="keys" id="k-gyro"></div></div>
       <div class="split">
-        <div class="col">
-          <canvas id="dials" role="img" aria-label="Rotation rate dials for x, y and z"></canvas>
+        <div class="col side wide">
+          <div class="cwrap"><canvas id="dials" role="img" aria-label="Rotation rate dials for x, y and z"></canvas></div>
         </div>
-        <div class="col">
-          <div class="chartwrap"><canvas class="chart short" id="c-gyro" tabindex="0" role="img" aria-label="Rotation rate over time"></canvas></div>
+        <div class="col fill">
+          <div class="chartwrap"><canvas class="chart" id="c-gyro" tabindex="0" role="img" aria-label="Rotation rate over time"></canvas></div>
           <div class="tablewrap"><table id="t-gyro"></table></div>
         </div>
       </div>
     </section>
+
+    <section class="sheet" id="sec-joy">
+      <div class="sh"><h2>Joystick</h2><p>I2C Joystick 2 Unit on Port A. Percent of a full push: 100 in any direction.</p>
+        <div class="keys" id="k-joy"></div>
+        <div class="seg" id="joyset" role="group" aria-label="Joystick orientation" title="Hold the unit with its cable toward you: pushing away from you should move the dot up. Changes apply on the Tab5 too.">
+          <button data-c="joy flipx" aria-pressed="false">Flip X</button><button data-c="joy flipy" aria-pressed="false">Flip Y</button><button data-c="joy swap" aria-pressed="false">Swap X/Y</button><button data-c="joy reset">Reset</button>
+        </div>
+      </div>
+      <div class="split">
+        <div class="col side">
+          <div class="cwrap"><canvas id="joypad" role="img" aria-label="Joystick position and button"></canvas></div>
+          <div class="readrow" id="r-joy"></div>
+        </div>
+        <div class="col fill">
+          <div class="chartwrap"><canvas class="chart" id="c-joy" tabindex="0" role="img" aria-label="Joystick position over time"></canvas></div>
+          <div class="tablewrap"><table id="t-joy"></table></div>
+        </div>
+      </div>
+    </section>
+    </div>
   </main>
 </div>
 <div id="tip" role="status"></div>
@@ -263,7 +294,7 @@
 <script src="mqtt.min.js"></script>
 <script>
 "use strict";
-const URL_ = "ws://localhost:9001", T_IMU = "tab5/imu", T_PWR = "tab5/power", T_AUDIO = "tab5/audio", T_CMD = "tab5/cmd";
+const URL_ = "ws://localhost:9001", T_IMU = "tab5/imu", T_PWR = "tab5/power", T_AUDIO = "tab5/audio", T_CMD = "tab5/cmd", T_JOY = "tab5/joy";
 const $ = id => document.getElementById(id);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const MINUS = "−";
@@ -272,8 +303,8 @@ const store = { get(k, d) { try { return localStorage.getItem(k) || d; } catch {
                 set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
 
 // ---------- data ----------
-const imu = [], pwr = [];
-let pw = null, lastImu = null, imuRx = 0, pwrRx = 0, rxTimes = [], audioRx = [];
+const imu = [], pwr = [], joy = [];
+let pw = null, lastImu = null, imuRx = 0, pwrRx = 0, rxTimes = [], audioRx = [], lastJoy = null, joyRx = 0;
 
 function push(arr, m, keep) {
   if (arr.length && m.t < arr[arr.length - 1].t - 2000) arr.length = 0;     // device rebooted
@@ -283,12 +314,13 @@ function push(arr, m, keep) {
 
 // ---------- MQTT ----------
 const client = mqtt.connect(URL_, { reconnectPeriod: 2000 });
-client.on("connect", () => client.subscribe([T_IMU, T_PWR, T_AUDIO]));
+client.on("connect", () => client.subscribe([T_IMU, T_PWR, T_AUDIO, T_JOY]));
 client.on("message", (topic, payload) => {
   if (topic === T_AUDIO) return playAudio(payload);
   let m; try { m = JSON.parse(payload.toString()); } catch { return; }
   const now = performance.now();
   if (topic === T_PWR) { pw = m; pwrRx = now; push(pwr, m, 700); }
+  else if (topic === T_JOY) { lastJoy = m; joyRx = now; if (m.ok) push(joy, m, 1600); }
   else { lastImu = m; imuRx = now; rxTimes.push(now); push(imu, m, 3500); }
 });
 
@@ -360,6 +392,14 @@ function readRow(id) { const el = $(id); AXN.forEach((n, i) => { const s = docum
   k.style.background = `var(--${AX[i]})`; v.id = `${id}-${i}`; s.append(k, n + " ", v); el.append(s); });
   const t = document.createElement("span"); t.append("Total "); const b = document.createElement("b"); b.id = id + "-m"; t.append(b); el.append(t); }
 readRow("r-accel");
+(function () {                                                  // joystick: X and Y keys, and the readout row
+  const k = $("k-joy");
+  ["X", "Y"].forEach((n, i) => { const sp = document.createElement("span"), ic = document.createElement("i"); ic.style.background = `var(--${AX[i]})`; sp.append(ic, n); k.append(sp); });
+  const r = $("r-joy");
+  [["X", "x", "s1"], ["Y", "y", "s2"]].forEach(([n, id, c]) => { const sp = document.createElement("span"), ic = document.createElement("i"), b = document.createElement("b");
+    ic.style.background = `var(--${c})`; b.id = "r-joy-" + id; sp.append(ic, n + " ", b); r.append(sp); });
+  const bs = document.createElement("span"), bb = document.createElement("b"); bb.id = "r-joy-b"; bs.append("Button ", bb); r.append(bs);
+})();
 
 // ---------- time-series charts with crosshair + tooltip ----------
 const tip = $("tip");
@@ -383,6 +423,7 @@ lineChart({ id: "c-power", arr: pwr, min: 2, unit: "W", unsigned: true, area: tr
   series: [{ k: "p", name: "Battery power", c: "s1", d: 2, fmt: v => Math.abs(v).toFixed(2) + " W, " + powerWord(v) }] });
 lineChart({ id: "c-accel", arr: imu, min: 2, unit: "g", series: AXN.map((n, i) => ({ k: "a" + "xyz"[i], name: n, c: AX[i], d: 2 })) });
 lineChart({ id: "c-gyro",  arr: imu, min: 50, unit: "dps", series: AXN.map((n, i) => ({ k: "g" + "xyz"[i], name: n, c: AX[i], d: 0 })) });
+lineChart({ id: "c-joy", arr: joy, min: 100, fixed: 100, unit: "%", series: [{ k: "x", name: "X", c: "s1", d: 1 }, { k: "y", name: "Y", c: "s2", d: 1 }] });
 
 function drawChart(ch, now) {
   if (!ch.cv.offsetWidth) return;                                         // hidden (table view)
@@ -394,7 +435,7 @@ function drawChart(ch, now) {
   const tEnd = a[n - 1].t, i0 = lowerBound(a, tEnd - win * 1000);
   let m = 0;
   for (let i = i0; i < n; i++) for (const s of ch.series) m = Math.max(m, Math.abs(a[i][s.k]));
-  const R = niceRange(m, ch.min), cy = padT + ph / 2;
+  const R = ch.fixed || niceRange(m, ch.min), cy = padT + ph / 2;
   const Y = v => cy - clamp(v / R, -1, 1) * ph / 2;
   const X = t => pl + (1 - (tEnd - t) / (win * 1000)) * pw_;
 
@@ -409,7 +450,8 @@ function drawChart(ch, now) {
     g.fillText("Charging", pl + 8, padT + 10); g.fillText("Discharging", pl + 8, padT + ph - 10);
   }
   g.fillStyle = C.muted; g.textBaseline = "alphabetic";
-  const stepS = win <= 10 ? 2 : win <= 30 ? 5 : 10;
+  const maxLab = Math.max(2, Math.floor(pw_ / 62));                        // keep the time labels from colliding on narrow charts
+  const stepS = [1, 2, 5, 10, 15, 20, 30, 60].find(v => win / v <= maxLab) || 60;
   for (let s = 0; s <= win; s += stepS) {
     g.textAlign = s === 0 ? "right" : s === win ? "left" : "center";
     g.fillText(s === 0 ? "now" : MINUS + s + " s", X(tEnd - s * 1000), h - 5);
@@ -488,6 +530,38 @@ function drawScope() {
   g.fillStyle = C.ink; g.beginPath(); g.arc(bx, by, 9, 0, 7); g.fill();
 }
 
+// ---------- joystick pad ----------
+function drawJoyPad() {
+  const { g, w, h } = fit($("joypad"));
+  const cx = w / 2, cy = h / 2, R = Math.min(w, h) / 2 - 24, M = 100;
+  const pressed = !!(lastJoy && lastJoy.ok && lastJoy.b === 1);
+  g.font = FONT;
+  g.strokeStyle = pressed ? C.s2 : C.axis; g.lineWidth = pressed ? 3 : 1;
+  g.strokeRect(cx - R + .5, cy - R + .5, 2 * R, 2 * R);
+  g.lineWidth = 1; g.strokeStyle = C.grid;
+  g.beginPath(); g.arc(cx, cy, R, 0, 7); g.stroke();
+  g.beginPath(); g.arc(cx, cy, R / 2, 0, 7); g.stroke();
+  g.beginPath(); g.moveTo(cx - R, cy + .5); g.lineTo(cx + R, cy + .5); g.moveTo(cx + .5, cy - R); g.lineTo(cx + .5, cy + R); g.stroke();
+  g.fillStyle = C.muted; g.textAlign = "center"; g.textBaseline = "middle";
+  g.fillText("+X", cx + R - 14, cy - 12); g.fillText("+Y", cx + 14, cy - R + 12);
+  const age = joyRx ? performance.now() - joyRx : Infinity;
+  if (!lastJoy || age > 3000 || !lastJoy.ok) {
+    g.fillStyle = C.muted; g.font = "600 14px system-ui, sans-serif";
+    g.fillText(!lastJoy || age > 3000 ? "No joystick data from the Tab5" : "No joystick found on Port A", cx, cy);
+    return;
+  }
+  const pos = r => [cx + clamp(r.x / M, -1, 1) * R, cy - clamp(r.y / M, -1, 1) * R];
+  const n = joy.length, TR = 40, t0 = Math.max(0, n - TR);
+  g.fillStyle = C.ink;
+  for (let i = t0; i < n; i++) { const [px, py] = pos(joy[i]), k = (i - t0) / TR;
+    g.globalAlpha = .06 + .34 * k; g.beginPath(); g.arc(px, py, 2 + 4 * k, 0, 7); g.fill(); }
+  g.globalAlpha = 1;
+  const [bx, by] = pos(lastJoy);
+  g.strokeStyle = C.muted; g.lineWidth = 2; g.beginPath(); g.moveTo(cx, cy); g.lineTo(bx, by); g.stroke();
+  g.fillStyle = C.surface; g.beginPath(); g.arc(bx, by, pressed ? 17 : 12, 0, 7); g.fill();
+  g.fillStyle = pressed ? C.s2 : C.ink; g.beginPath(); g.arc(bx, by, pressed ? 14 : 9, 0, 7); g.fill();
+}
+
 // ---------- gyro dials ----------
 function drawDials() {
   const { g, w, h } = fit($("dials"));
@@ -533,9 +607,22 @@ function threeAxisTable(id, arr, pre, unit, d) {
     for (const a of "xyz") r.insertCell().textContent = sgn(row[pre + a], d);
   }
 }
+function joyTable() {
+  const el = $("t-joy"); el.replaceChildren();
+  const head = el.createTHead().insertRow();
+  ["Time", "X", "Y", "Button"].forEach(t => { const th = document.createElement("th"); th.textContent = t; head.append(th); });
+  const body = el.createTBody();
+  if (joy.length < 2) { const r = body.insertRow(), c = r.insertCell(); c.colSpan = 4; c.textContent = lastJoy && !lastJoy.ok ? "No joystick found on Port A." : "Waiting for joystick data from the Tab5."; return; }
+  const tEnd = joy[joy.length - 1].t;
+  for (let s = 0; s <= 10; s++) {
+    const row = joy[clamp(lowerBound(joy, tEnd - s * 1000), 0, joy.length - 1)], r = body.insertRow();
+    r.insertCell().textContent = s === 0 ? "Now" : MINUS + s + " s";
+    r.insertCell().textContent = sgn(row.x, 1) + " %"; r.insertCell().textContent = sgn(row.y, 1) + " %"; r.insertCell().textContent = row.b ? "pressed" : "released";
+  }
+}
 function updateTables(now) {
   if (view !== "tables" || now - tblT < 500) return; tblT = now;
-  powerTable(); threeAxisTable("t-accel", imu, "a", "g", 2); threeAxisTable("t-gyro", imu, "g", "dps", 0);
+  powerTable(); threeAxisTable("t-accel", imu, "a", "g", 2); threeAxisTable("t-gyro", imu, "g", "dps", 0); joyTable();
 }
 
 // ---------- screen: on/off and brightness, by command ----------
@@ -543,6 +630,7 @@ let scrOn = true, slpOn = false, briDrag = false, briSent = 0;
 const sendBri = () => client.publish(T_CMD, "brightness " + Math.round($("bri").value * 2.55));
 $("scr").onclick = () => client.publish(T_CMD, scrOn ? "screen off" : "screen on");
 $("slp").onclick = () => client.publish(T_CMD, slpOn ? "wake" : "sleep");
+$("joyset").onclick = e => { const b = e.target.closest("button"); if (b) client.publish(T_CMD, b.dataset.c); };
 $("bri").addEventListener("pointerdown", () => { briDrag = true; });
 addEventListener("pointerup", () => { briDrag = false; });
 $("bri").addEventListener("input", () => { setText("bri-v", $("bri").value + "%"); const n = performance.now(); if (n - briSent > 120) { briSent = n; sendBri(); } });
@@ -568,6 +656,19 @@ function readouts(now) {
   else if (imuRx) status("g-stream", "t-stream", "✕", "bad", "Tab5 stopped sending. Check it is on and on Wi-Fi.");
   else status("g-stream", "t-stream", "!", "wait", "No data yet. Check the Tab5 is on and on Wi-Fi.");
   setText("rate", age < 2000 ? `Updated ${rxTimes.length} readings/s` : "");
+  const jage = joyRx ? now - joyRx : Infinity;
+  if (!client.connected) status("g-joyst", "t-joyst", "·", "", "Joystick: waiting for the broker");
+  else if (jage < 3000 && lastJoy && lastJoy.ok) status("g-joyst", "t-joyst", "✓", "ok", "Joystick connected");
+  else if (jage < 3000 && lastJoy) status("g-joyst", "t-joyst", "!", "wait", "No joystick found on Port A");
+  else status("g-joyst", "t-joyst", "·", "", "Joystick: no data");
+  if (lastJoy && jage < 3000) {
+    const on = lastJoy.ok;
+    setText("r-joy-x", on ? sgn(lastJoy.x, 1) + "%" : "–");
+    setText("r-joy-y", on ? sgn(lastJoy.y, 1) + "%" : "–");
+    setText("r-joy-b", on ? (lastJoy.b ? "pressed" : "released") : "–");
+    const bs = $("joyset").children;
+    bs[0].setAttribute("aria-pressed", String(!!lastJoy.fx)); bs[1].setAttribute("aria-pressed", String(!!lastJoy.fy)); bs[2].setAttribute("aria-pressed", String(!!lastJoy.sw));
+  }
 
   if (pw && now - pwrRx < 3000) {
     setText("hp", Math.abs(pw.p).toFixed(2));
@@ -609,7 +710,7 @@ function readouts(now) {
 function frame(now) {
   palette(); readouts(now);
   for (const ch of charts) drawChart(ch, now);
-  drawScope(); drawDials(); updateTables(now);
+  drawScope(); drawDials(); drawJoyPad(); updateTables(now);
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
