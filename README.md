@@ -155,6 +155,7 @@ tools/.venv/bin/python tools/powerbench.py --cpus 180,90,40     # real sleep mod
 - The Wi-Fi signal reading and the access-point status are calls into the C6 that can block when the C6 does not answer. The firmware polls the signal every 10 s and stops for good after the first timeout; the symbol then shows plain "connected".
 - `broker/setup-tls.sh` binds the server certificate to the Mac's LAN address. If DHCP gives the Mac a new address, re-run it, restart the broker, and set the Tab5 up again with the new address. Reserving the address on the router avoids this.
 - The broker container restarts with Podman but not after a reboot of the Podman VM; run `broker/run.sh` again.
+- The broker keeps its retained messages (the `tab5/info` message, and later the control topics) in a Podman volume named `tab5-mqtt-data`, saved every 60 s and on a clean stop, so `broker/run.sh` can be run again without losing them. To wipe them, run `podman volume rm tab5-mqtt-data` with the broker stopped.
 
 ## What is tested, and what is not
 

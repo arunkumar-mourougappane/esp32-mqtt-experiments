@@ -3,6 +3,7 @@
 #   8883 -> MQTT over TLS + password, reachable from the LAN (the Tab5 connects here)
 #   8884 -> MQTT over TLS + a device certificate (no password), reachable from the LAN (the Tab5 can connect here instead)
 #   9001 -> MQTT over WebSockets, 127.0.0.1 only, read-only, no login (the browser viewer connects here)
+# Retained messages are kept in the podman volume tab5-mqtt-data, so they survive a restart of this script.
 # Run broker/setup-tls.sh once first.
 set -euo pipefail
 
@@ -17,6 +18,8 @@ podman info >/dev/null 2>&1 || podman machine start
 
 [[ -f "$DIR/certs/server.crt" && -f "$DIR/passwd" ]] || { echo "run broker/setup-tls.sh first" >&2; exit 1; }
 
+# Stop gracefully first (SIGTERM, up to 10 s) so Mosquitto writes its retained messages to the data volume.
+podman stop -t 10 "$NAME" >/dev/null 2>&1 || true
 podman rm -f "$NAME" >/dev/null 2>&1 || true
 podman run -d --name "$NAME" --restart unless-stopped \
   -p 8883:8883 \
@@ -28,6 +31,7 @@ podman run -d --name "$NAME" --restart unless-stopped \
   -v "$DIR/acl.viewer:/mosquitto/config/acl.viewer:ro" \
   -v "$DIR/acl.certs:/mosquitto/config/acl.certs:ro" \
   -v "$DIR/certs:/mosquitto/certs:ro" \
+  -v tab5-mqtt-data:/mosquitto/data \
   "$IMAGE" >/dev/null
 
 echo "broker '$NAME' running"
