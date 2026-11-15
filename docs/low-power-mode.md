@@ -43,7 +43,7 @@ Three states, and each has one name and one way in and out. The old `sleep` and 
 
 Renames that go with this (to do when it is built, all together so the viewer and firmware agree): the caps token `sleep` becomes
 `standby`; the `slp` field in `tab5/power` becomes `stb`; the README "Sleep mode" section becomes "Standby mode"; the viewer's
-Sleep button becomes Standby; the moon tile label changes to match. *Proposed.*
+Sleep button becomes Standby; the moon tile label changes to match. *Decided.*
 
 ## 2. Decisions so far
 
@@ -231,9 +231,10 @@ details are proposed*):
 2. **The viewer publishes its own SHA** on `tab5/catalog/sha`, retained, **every 15 minutes** and once when it connects. The SHA
    is the first 16 hex characters of the SHA-256 of the compact JSON, a few dozen bytes.
 3. **The viewer sees a mismatch and publishes the catalog.** When the Tab5's reported `cat` differs from the viewer's SHA, the
-   viewer publishes the full catalog, retained, on `tab5/catalog`, then its SHA at once. It does this only if the broker's
-   retained catalog is not already the right one (the viewer reads the retained `tab5/catalog` when it connects and compares
-   its SHA), so a catalog that is already on the broker is not sent again. **It is the viewer that pushes, not Mosquitto**:
+   viewer publishes the full catalog, retained, on `tab5/catalog`, then its SHA at once. **The push check is done with the SHA**
+   (*decided*): the viewer reads only the small retained `tab5/catalog/sha` (it never downloads the catalog to compare) and
+   pushes only if that SHA differs from its own or is missing, so a catalog that is already on the broker is not sent again. This
+   is sound because the catalog is always published before its SHA. **It is the viewer that pushes, not Mosquitto**:
    the broker only stores and forwards messages and has no logic of its own. With no viewer open, nothing is pushed, and the
    Tab5 simply keeps what it has (the built-in default on a first boot) until a viewer opens.
    **There is also a manual "Send catalog" button** (*decided*) for when the user wants to push by hand, for example after a
@@ -339,9 +340,24 @@ Checks on every rule, when a catalog is received and again when a rule is deploy
     (the device id check in the open items still applies). A later retained message with a different id replaces both.
   - If the card is missing, or the file is missing or invalid, the **NVS copy is used** and the status says so. If there is no NVS
     copy either, the built-in default is used.
-  - A new subscription from the viewer is written to the file first, then to NVS. *Proposed:* if the card is missing (so the file
-    cannot be written), it is rejected with the reason "no card", because otherwise the old file would silently overwrite it at
-    the next boot.
+  - A new subscription from the viewer is written to the file first, then to NVS.
+  - **No card (*decided*): the Tab5 lives with what is in NVS** and **rejects everything that needs the card**, with the reason
+    `no_card` in the ack: an incoming subscription, an incoming catalog, and any command that has to write the card (including a
+    setting change, which is written through to the card). Otherwise the old file would silently overwrite the change at the next
+    boot, as the card is the source of truth.
+    - A rejected catalog is not even pulled: with no card the Tab5 does not subscribe to `tab5/catalog`, so it spends no radio
+      time on it.
+    - *Decided:* the Tab5 keeps the catalog SHA in NVS (set whenever the catalog is saved or read from the card), and with no card
+      it reports that cached SHA as `cat`, together with `card: false`. Otherwise it would report `0` (no file), the viewer would
+      take it for a first boot and push the catalog again and again for a Tab5 that will only reject it. The viewer does not push
+      while the status says `card: false` (*decided*: the viewer sees there is no card and stops pushing the catalog).
+    - A poke with no card is not rejected: there is nothing saved to send, so it is acked with `records_sent: 0`.
+    - **Entering LPM with no card is accepted and degrades** (*decided*): `lpm`, the tile and a `desired` of `lpm` are not
+      rejected. **Which subscription runs:** the one in NVS if there is one, otherwise the built-in default (id 1, which needs no
+      file). **Any subscription pushed while there is no card is rejected** (`no_card`), because the catalog it would be looked up
+      in is on the card. With nowhere to keep a sample, each wake **uploads its own sample at once** (the call-in interval is not
+      used), and the status says `card: false` and which subscription is in use. A device already in LPM whose card disappears does
+      the same.
 - The viewer shows what the device holds from the retained status: `sub: {id, name}` for the active rule and `cat` for the catalog
   SHA. A `cat` that differs from the viewer's SHA shows as "out of sync" until the Tab5 next wakes and pulls the catalog. The Send catalog button is always available.
 - In awake mode the stored subscription is not used.
@@ -423,7 +439,7 @@ Notes:
 - Records are appended with a checksum each, and the file is closed before power off, so a torn last record is skipped.
 - If the card disappears during LPM, degrade to uploading at every wake and say so in the status.
 
-### Peripherals in LPM (*proposed; the "off" column is by design, not measured*)
+### Peripherals in LPM (*decided; the "off" column is by design, not measured*)
 
 **Requirement (user): the display is never turned on in LPM, not even a flash at power-on.** The backlight must stay off for
 the whole wake.
@@ -431,7 +447,7 @@ the whole wake.
 | Peripheral | While powered off (between wakes) | During the wake window (about 10 s) |
 |---|---|---|
 | RTC (RX8130) and power MCU | **On.** They keep the time and fire the alarm. Everything else is cut | On |
-| Display panel and backlight | Off | **Backlight stays off.** `M5.begin()` initialises the panel (no config switch skips it; `clear_display` only decides whether it is cleared), so the first thing after it is brightness 0, and the question of skipping the init is open (section 8) |
+| Display panel and backlight | Off | **Backlight stays off.** `M5.begin()` initialises the panel (no config switch skips it), so the first thing after it is brightness 0. The panel has no power switch, only a reset line, and the backlight is GPIO 22 PWM at a default of 127 until we set it; see the investigation table below |
 | IMU (BMI270) | Off | On, for the sample burst only (needs `internal_imu`) |
 | Battery monitor (INA226) | Off | On, to read the voltage and percent |
 | SD card | Off | On, to save the record and read the settings and catalog |
@@ -446,6 +462,29 @@ the whole wake.
    the power MCU treats those rails.
 3. **Battery charging is left alone**, so the pack keeps charging when USB-C is connected.
 Whether the Port A 5 V really is 0 V while the board is off is a test (section 8).
+
+**What `M5.begin()` does on the Tab5, and which rails the firmware can switch** (investigated 2026-11-15 from the M5GFX 
+and M5Unified sources in `.pio/libdeps` and M5Stack's Tab5 pin tables; **read, not run on the hardware**):
+
+| Item | Finding |
+|---|---|
+| Bring-up | The board detection that `M5.begin()` runs executes **one fixed sequence of IO-expander writes** (M5GFX `tab5_power_on`). Decoded with M5Stack's pin table (*my decoding*), it leaves expander 0x43 with `SPK_EN`, `EXT5V_EN`, `LCD_RST`, `TP_RST` and `CAM_RST` released or on, and expander 0x44 with `WLAN_PWR_EN`, `USB5V_EN` and `CHG_EN` on. So **everything is switched on before our code can say otherwise**, and there is no config flag to skip it. The code can switch rails off afterwards |
+| Expander 0x43 pins | P0 `RF_INT_EXT_SWITCH` (antenna select), P1 `SPK_EN` (speaker amp), P2 `EXT5V_EN`, P4 `LCD_RST`, P5 `TP_RST`, P6 `CAM_RST`, P7 `HP_DET` |
+| Expander 0x44 pins | P0 `WLAN_PWR_EN` (C6 supply), P3 `USB5V_EN`, P4 `PWROFF_PLUSE`, P5 `nCHG_QC_EN`, P6 `CHG_STAT_LED`, P7 `CHG_EN` |
+| Display panel | **No power switch**: only a reset line (`LCD_RST`). "Panel unpowered" is not possible; "panel held in reset and the backlight at 0" is |
+| Backlight | **Not on an expander**: P4 GPIO 22, PWM 44.1 kHz on LEDC channel 7, not inverted. **Observed by the user at the alarm test: the screen lit for about a second at a wake and then went dark.** Cause, from the source: when the panel init finishes, M5GFX calls `setBrightness(_brightness)` (`LGFXBase.cpp:3645`), and `_brightness` defaults to **127**, so the backlight comes on at about half until our own `setBrightness(0)` runs after `M5.begin()` returns |
+| C6 Wi-Fi | `WLAN_PWR_EN` (0x44 P0) is a switch, so the C6 supply **can** be cut and restored. Whether esp-hosted recovers cleanly after a cut and a restore is untested |
+| Port A, M5-Bus and USB-A 5 V | `EXT5V_EN` and `USB5V_EN`, as already decided |
+| Charging | `CHG_EN` (0x44 P7). Leave it alone (decided) |
+| Camera | Only a reset pin is listed; no power enable |
+| microSD | No expander pin (GPIO 39 to 44) |
+| Codecs, IMU, RTC | No power pin. The codecs are powered down by register writes. The IMU and RTC are always powered |
+| Not running `M5.begin()`'s display part | **Possible only by not calling `M5.begin()` at all** in the wake path and doing our own bring-up: the fixed expander writes minus the ones we do not want (`LCD_RST`, `WLAN_PWR_EN`, `SPK_EN`, `EXT5V_EN`), and then using the RTC, IMU and INA226 over plain I2C. It re-implements board setup and would need the hardware to check. Not recommended unless the backlight flash is real |
+
+**Fix (*decided*; still to be tested on the hardware, not yet tried):** call `M5.Display.setBrightness(0)` **before** `M5.begin()`. Before the
+panel exists that call only stores `_brightness = 0` (`LGFXBase.hpp:1469`), so the init's `setBrightness(_brightness)` then applies 0
+instead of 127 and the backlight never comes up. It costs one line and only the wake path needs it. If the screen still glows, the
+fallback is the own-bring-up option above. Also log how long `M5.begin()` takes, to bound whatever is left.
 
 How much current the board really draws while "off", and which rails the power MCU actually cuts, **has not been measured**. It
 needs the external meter (section 8). The table is what the design assumes.
@@ -541,7 +580,7 @@ Rules that keep it safe:
        period is the current phase's.
   - **LPM wake** (*decided*): **no modal**, because the display is never lit in LPM (decision 6). The Tab5 brings the radio up (20 s
     cap), **sends a low-battery message to the broker** (the retained status with `alert: "low_battery"`, voltage and percent),
-    and that is all: it arms the alarm and powers off. *My reading:* it does not upload the backlog here. The data stays on the
+    and that is all: it arms the alarm and powers off. **It does not upload the backlog here** (*decided*). The data stays on the
     card and goes out at the next awake start (the start sequence), so nothing is lost, and a long radio session at 6.0 V is avoided.
 - **The limit applies in every mode** (*decided*).
 
@@ -624,7 +663,17 @@ logged on the serial port and reported once in the status as `desired_err`.
   `desired_err` as "the device ignored your request: <reason>" instead of leaving "queued" on screen.
 - The ids are 64-bit on the device (`Date.now()` is a 41-bit number today, but the check should not assume 32 bits).
 
-Viewer button states: Poke, Poke queued (with "seen at the next wake in about N min" from the status), Delivered (N records),
+**Viewer states for the Low-power and Wake buttons** (*decided*):
+
+| State | Shown when | Ends when |
+|---|---|---|
+| Idle | No request pending | |
+| Queued | The viewer wrote a new id and the status does not show it applied yet, with "seen at the next wake in about N min" from `next_wake` | The status's `desired` equals the id, or `desired_err` appears |
+| Applied | The status's `desired` equals the id | Clears after a few seconds |
+| Rejected | `desired_err` appears, or an ack says `no_card` | The user dismisses it, or sends a new request |
+| Late | No status for more than 1.5 snooze periods plus the boot margin | A status arrives |
+
+Viewer button states for Poke: Poke, Poke queued (with "seen at the next wake in about N min" from the status), Delivered (N records),
 Ignored: too soon. The viewer's access list (`broker/acl.viewer`) must be extended so it can write `tab5/poke`, `tab5/desired`,
 `tab5/subscription`, `tab5/catalog`, `tab5/catalog/sha` and `tab5/catalog/push` (MQTT access rules match a topic exactly, so each
 sub-topic needs its own line). It currently writes only `tab5/cmd`.
@@ -650,13 +699,13 @@ record is tiny against 30 GB).
 
 **The sequence number** is kept on the SD card and worked on in NVS. At boot it is read from the card and written to NVS, used
 from there during the wake, and written back to the card before the board powers off. Surviving a reflash (which erases NVS)
-is the point of the card copy. *Proposed details:*
+is the point of the card copy. *Decided details:*
 
 - If both copies exist and differ, take the larger one. If the log's last record carries a higher number (power lost before the
   write-back), take that.
 - If the card is missing, use NVS alone and write back when the card returns.
 - A swapped or reformatted card with an erased NVS still restarts the numbering, and the receiver's dedup would then drop the new
-  records as duplicates. A boot or session id in each record, deduplicating on `(session, seq)`, would close that. Open.
+  records as duplicates. **A session id in each record, deduplicating on `(session, seq)`, closes that** (*decided*). The session id is new whenever the numbering restarts (a new random value written with the first record after an erase or a card swap).
 
 State kept in NVS (it must not depend on the card mounting at every wake): `last_callin`, snooze count, the working copy of the
 sequence number, last handled poke id, last applied desired-mode id, last applied subscription id, last handled catalog push id, the last rejected catalog SHA, the catalog-pull back-off counter, `lpm_active`, `armed_alarm`.
@@ -736,7 +785,7 @@ snooze about 1.4 mW, which is below what the unmeasured off-state draw is likely
 | Item | Notes |
 |---|---|
 | Radio-wake cost | A spike that logs each step's time: boot, Wi-Fi up, TLS up, MQTT up, poke read, publish, power off. Try caching the BSSID and channel, and skip the NTP wait (the RTC has the time) |
-| Display during LPM | `M5.begin()` initialises the panel by default. Check whether the wake path can skip it, and whether the backlight flickers between power-on and our code. The battery test kept brightness at 0; the user has not confirmed it stayed dark |
+| Display during LPM | **The glow is real** (the user saw the screen light for about a second at an alarm wake). Cause found: the init applies the default brightness 127. Fix decided: `M5.Display.setBrightness(0)` before `M5.begin()`; still to test on the hardware, with your eyes on the screen at a wake. Fallback: own bring-up without `M5.begin()` |
 | Port A 5 V while off | With no unit plugged in and the device in LPM between wakes, measure the 5 V pin of Port A with a multimeter. 0 V means the rail is off; about 5 V means it stays on and drains the pack |
 | External power detection | **Deferred by the user ("later").** How the firmware recognises USB-C or `HVIN` power, which the low-battery rule (skipped on external power) and decision 17 (leave LPM when plugged in) both need. When it is done: log `isCharging()`, the INA226 current and voltage, and the charger status while USB is plugged in at a healthy battery level, then unplugged; and check a pack in protection mode, which may take no charge current while the board runs from USB |
 | Margin of the 6200 mV limit | Decided at 6200 mV, 200 mV above M5Stack's 6 V protection. Whether that is enough depends on the off-state draw (external meter) and the sag during the alert |
