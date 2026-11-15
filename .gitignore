@@ -9,3 +9,6 @@ tools/.venv
 tools/logs/
 __pycache__/
 broker/provision/
+.cache
+.dummy
+compile_commands.json
