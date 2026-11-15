@@ -15,6 +15,12 @@
 #include <PubSubClient.h>
 #include <math.h>
 #include <time.h>
+#include <sys/time.h>
+#include <SD_MMC.h>
+#include <esp_partition.h>
+#include <esp_chip_info.h>
+#include <esp_timer.h>
+#include <nvs.h>
 #include <Preferences.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
@@ -27,6 +33,8 @@
 #define MQTT_TOPIC_CMD   "tab5/cmd"
 #define MQTT_TOPIC_AUDIO "tab5/audio"
 #define MQTT_TOPIC_CAPS  "tab5/caps"    // what this Tab5 has right now (modules that were detected); sent on request, on connect and when it changes
+#define MQTT_TOPIC_STATS "tab5/stats"   // device statistics, every few seconds
+#define MQTT_TOPIC_INFO  "tab5/info"    // what the device is and has: chip, flash, partitions, peripherals (retained)
 #define MQTT_TOPIC_JOY   "tab5/joy"     // M5Stack I2C Joystick 2 Unit on Port A: calibrated x, y (-4095..4095) and the button
 
 static constexpr int   HIST        = 300;     // history samples (3 s at 100 Hz)
@@ -81,6 +89,7 @@ static constexpr BaseType_t CORE_GFX = 0, CORE_IO = 1;
 
 static void sampleTask(void *);
 static void txTask(void *);
+static void sdTask(void *);
 static void powerTask(void *);
 static void micTask(void *);
 static void joyTask(void *);
@@ -129,6 +138,7 @@ struct Snap {
 static Snap live;
 static SemaphoreHandle_t mtx;
 static prov::Config cfg;            // loaded once at boot; the TLS client keeps pointers into these strings, so never modify them
+static const char *ntpServer() { return cfg.ntp.empty() ? "pool.ntp.org" : cfg.ntp.c_str(); }
 static bool freshCfg;               // the settings were saved a moment ago and have not been proven yet
 static volatile int lastMqttState;  // PubSubClient state of the last failed connect: 4 bad credentials, 5 not authorised
 static uint32_t bootMs;
@@ -148,6 +158,9 @@ static QueueHandle_t joyQ;      // joyTask    -> txTask
 // Which way the stick points on screen depends on how the unit is held, so three switches fix it (saved in NVS).
 static volatile bool joyFlipX, joyFlipY, joySwap;
 static int page;                // 0 dashboard, 1 joystick (drawTask only). A page exists only while its module is detected.
+static volatile bool sdMounted;                 // a microSD card is mounted (set by sdTask)
+static volatile uint32_t sdMB;                  // its size in MB
+static volatile uint32_t sdUsedMB;              // space in use, MB (counted by sdTask, refreshed every minute)
 static volatile bool joyPresent;                // a joystick unit answers on Port A (set by joyTask)
 static volatile bool capsPending = true;        // publish the capabilities (set on connect, on a change, and by the "caps" command)
 static void joyToggle(int which) {              // 0 flip x, 1 flip y, 2 swap axes, 3 back to the defaults
@@ -464,6 +477,16 @@ static void drawBrokerGlyph(int x, int y, int w, int h, int pitch, int dot, uint
   }
 }
 
+// A microSD card, 18 x 24: outline with a clipped top-right corner, and three contacts.
+static void drawSdGlyph(int x, int y, uint16_t c) {
+  for (int t = 0; t < 2; t++) {
+    const int a = x + t, b = y + t, w = 17 - 2 * t, h = 23 - 2 * t;
+    g.drawLine(a, b, a + w - 6, b, c); g.drawLine(a + w - 6, b, a + w, b + 6, c);
+    g.drawLine(a + w, b + 6, a + w, b + h, c); g.drawLine(a + w, b + h, a, b + h, c); g.drawLine(a, b + h, a, b, c);
+  }
+  for (int k = 0; k < 3; k++) g.fillRect(x + 4 + k * 4, y + 4, 2, 7, c);
+}
+
 static void drawHeader(int fps, int rssi, const char *title, bool joyOn) {
   g.fillRect(0, 0, SCR_W, 76, C_PANEL);
   g.setTextSize(3); g.setTextColor(C_TXT);
@@ -472,6 +495,7 @@ static void drawHeader(int fps, int rssi, const char *title, bool joyOn) {
   drawWifiGlyph(262, 32, 4, 4, 2, 2, rssi);              // all within y 14..35, clear of the text line at y 46
   drawBrokerGlyph(304, 14, 24, 9, 12, 1, C_PANEL);
   if (joyOn) { g.drawCircle(364, 26, 10, C_Y); g.drawCircle(364, 26, 9, C_Y); g.fillCircle(364, 26, 4, C_Y); }   // a joystick is connected (see the Joystick page)
+  if (sdMounted) drawSdGlyph(396, 14, C_Y);                  // a card is mounted
   g.setTextColor(C_DIM);
   char b[64];
   snprintf(b, sizeof b, "%u msg/s", (unsigned)pubRate);
@@ -1049,6 +1073,42 @@ static void joyTask(void *) {
   }
 }
 
+// ---------- microSD card ----------
+// Mounted at boot, and looked for again every 15 s while there is none, so a card can be put in while the Tab5 runs. While one is
+// mounted it is checked every 5 s with a status command to the card (CMD13), which fails once the card is pulled; the card is then
+// released. Anything that uses the card must cope with it being absent: it is optional, nothing else depends on it. The slot is
+// SDMMC slot 0; the C6's Wi-Fi uses slot 1 of the same controller, and the two were measured to work together (spike/sdwifitest.cpp).
+extern "C" unsigned char ff_disk_status(unsigned char pdrv);             // FatFS drive status; with the check enabled it asks the card (CMD13)
+extern "C" void ff_sdmmc_set_disk_status_check(bool enable);
+static void sdTask(void *) {
+  bool up = false;
+  uint32_t lastTry = 0, lastUsed = 0;
+  for (;;) {
+    const uint32_t now = millis();
+    if (!up && (lastTry == 0 || now - lastTry >= 15000)) {
+      lastTry = now ? now : 1;
+      SD_MMC.setPowerChannel(4);                              // the P4 powers the slot's IO from on-chip LDO channel 4
+      up = SD_MMC.begin("/sdcard", false, false, 20000) || SD_MMC.begin("/sdcard", true, false, 20000);
+      if (up) {
+        ff_sdmmc_set_disk_status_check(true);
+        sdMB = (uint32_t)(SD_MMC.cardSize() / (1024ULL * 1024ULL)); sdMounted = true; capsPending = true;
+        Serial.printf("sd: mounted, %lu MB\n", (unsigned long)sdMB);
+        lastUsed = 0;
+      }
+    } else if (up && (ff_disk_status(0) & 1 /* STA_NOINIT */)) {
+      SD_MMC.end(); up = false; sdMounted = false; capsPending = true; lastTry = millis() | 1;
+      Serial.println("sd: card removed");
+    }
+    if (up && (lastUsed == 0 || now - lastUsed >= 60000)) {   // FatFS counts the free clusters; the first count on a large card reads the FAT
+      lastUsed = now | 1;
+      const uint32_t t0 = millis();
+      sdUsedMB = (uint32_t)(SD_MMC.usedBytes() / (1024ULL * 1024ULL));
+      if (millis() - t0 > 300) Serial.printf("sd: counting the used space took %u ms\n", (unsigned)(millis() - t0));
+    }
+    vTaskDelay(pdMS_TO_TICKS(up ? 5000 : 1000));
+  }
+}
+
 // ---------- microphone ----------
 // Off by default. "mic on" / "mic off" on tab5/cmd starts/stops capture; while on, 32 ms PCM blocks go
 // to tab5/audio. The port is only opened while streaming.
@@ -1103,7 +1163,11 @@ static void netService() {
   // Certificate validity dates are checked, so the clock must be set first (NTP; needs internet).
   static bool ntpStarted = false;
   if (time(nullptr) < 1700000000) {
-    if (!ntpStarted) { configTime(0, 0, "pool.ntp.org", "time.google.com"); ntpStarted = true; }
+    if (!ntpStarted) {                                       // the server chosen in setup, else the public pool; the pool is the fallback
+      configTime(0, 0, ntpServer(), cfg.ntp.empty() ? "time.google.com" : "pool.ntp.org");
+      ntpStarted = true;
+      Serial.printf("ntp: asking %s\n", ntpServer());
+    }
     return;
   }
   if (!mqtt.connected()) {
@@ -1140,12 +1204,22 @@ static void netService() {
   mqtt.loop();
 }
 
+// The Tab5 only streams once its clock is set (it cannot check the broker's certificate before), so every message can carry wall-clock
+// time: "ts" is Unix time in milliseconds, worked out from the moment the reading was taken ("t" is still the uptime in ms).
+static void tsStr(char *d, size_t n, uint32_t t) {
+  struct timeval tv; gettimeofday(&tv, nullptr);
+  if (tv.tv_sec < 1700000000) { d[0] = 0; return; }      // clock not set: leave the field out
+  const int64_t nowMs = (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+  snprintf(d, n, ",\"ts\":%lld", (long long)(nowMs - (int64_t)(uint32_t)(millis() - t)));
+}
+
 static void publish(const Sample &m) {
-  char p[192];
+  char p[224], ts[32];
+  tsStr(ts, sizeof ts, m.t);
   int n = snprintf(p, sizeof p,
     "{\"t\":%lu,\"ax\":%.4f,\"ay\":%.4f,\"az\":%.4f,\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f,"
-    "\"roll\":%.2f,\"pitch\":%.2f,\"yaw\":%.2f}",
-    (unsigned long)m.t, m.ax, m.ay, m.az, m.gx, m.gy, m.gz, m.roll, m.pitch, m.yaw);
+    "\"roll\":%.2f,\"pitch\":%.2f,\"yaw\":%.2f%s}",
+    (unsigned long)m.t, m.ax, m.ay, m.az, m.gx, m.gy, m.gz, m.roll, m.pitch, m.yaw, ts);
   if (n > 0 && mqtt.publish(MQTT_TOPIC, p)) { pubCount++; pubTotal++; }
 }
 
@@ -1177,30 +1251,115 @@ static void onMessage(char *topic, uint8_t *pl, unsigned len) {
 }
 
 static void publishPower(const PowerS &p) {
-  char b[320];
+  char b[352], ts[32];
+  tsStr(ts, sizeof ts, p.t);
   int n = snprintf(b, sizeof b,
     "{\"t\":%lu,\"v\":%.3f,\"i\":%.4f,\"p\":%.3f,\"soc\":%.0f,\"chg\":%d,"
     "\"t_imu\":%.1f,\"t_chip\":%.1f,\"rssi\":%d,\"heap\":%lu,\"mic\":%.1f,"
-    "\"avg\":%.3f,\"wh\":%.2f,\"eta\":%.0f,\"scr\":%d,\"bri\":%d,\"slp\":%d}",
+    "\"avg\":%.3f,\"wh\":%.2f,\"eta\":%.0f,\"scr\":%d,\"bri\":%d,\"slp\":%d%s}",
     (unsigned long)p.t, p.v, p.i, p.p, p.soc, p.chg, p.tImu, p.tChip, p.rssi, (unsigned long)p.heap, p.mic,
-    p.avg, p.wh, p.eta, p.scr, p.bri, p.slp);
+    p.avg, p.wh, p.eta, p.scr, p.bri, p.slp, ts);
   if (n > 0 && mqtt.publish(MQTT_TOPIC_POWER, b)) pubTotal++;
 }
 
 static void publishJoy(const JoyS &j) {
-  char b[160];
-  int n = snprintf(b, sizeof b, "{\"t\":%lu,\"ok\":%d,\"x\":%.1f,\"y\":%.1f,\"rx\":%d,\"ry\":%d,\"b\":%d,\"fx\":%d,\"fy\":%d,\"sw\":%d}",
-                   (unsigned long)j.t, j.present ? 1 : 0, j.x / 10.0f, j.y / 10.0f, j.rx, j.ry, j.pressed ? 1 : 0, (int)joyFlipX, (int)joyFlipY, (int)joySwap);
+  char b[192], ts[32];
+  tsStr(ts, sizeof ts, j.t);
+  int n = snprintf(b, sizeof b, "{\"t\":%lu,\"ok\":%d,\"x\":%.1f,\"y\":%.1f,\"rx\":%d,\"ry\":%d,\"b\":%d,\"fx\":%d,\"fy\":%d,\"sw\":%d%s}",
+                   (unsigned long)j.t, j.present ? 1 : 0, j.x / 10.0f, j.y / 10.0f, j.rx, j.ry, j.pressed ? 1 : 0, (int)joyFlipX, (int)joyFlipY, (int)joySwap, ts);
   if (n > 0 && mqtt.publish(MQTT_TOPIC_JOY, b)) pubTotal++;
 }
 
 // What this Tab5 has right now. Modules that are always there are listed always; the joystick only while a unit answers.
 // A viewer uses this to show a card only for a module that exists, and the Tab5 screen offers a page the same way.
 static void publishCaps() {
-  char b[200];
-  int n = snprintf(b, sizeof b, "{\"t\":%lu,\"fw\":\"%s %s\",\"caps\":[\"imu\",\"power\",\"screen\",\"mic\",\"sleep\"%s]}",
-                   (unsigned long)millis(), __DATE__, __TIME__, joyPresent ? ",\"joystick\"" : "");
+  char b[280], ts[32], sd[24] = "";
+  tsStr(ts, sizeof ts, millis());
+  if (sdMounted) snprintf(sd, sizeof sd, ",\"sdmb\":%lu", (unsigned long)sdMB);
+  int n = snprintf(b, sizeof b, "{\"t\":%lu,\"fw\":\"%s %s\",\"ntp\":\"%s\",\"caps\":[\"imu\",\"power\",\"screen\",\"mic\",\"sleep\"%s%s]%s%s}",
+                   (unsigned long)millis(), __DATE__, __TIME__, ntpServer(), joyPresent ? ",\"joystick\"" : "", sdMounted ? ",\"sdcard\"" : "", sd, ts);
   if (n > 0 && mqtt.publish(MQTT_TOPIC_CAPS, b)) pubTotal++;
+}
+
+// ---------- device statistics (tab5/stats, every 5 s awake and every 30 s in sleep mode) and facts (tab5/info) ----------
+// CPU load per core is 100 % minus the share of wall time that core's idle task ran, from the FreeRTOS run-time counters
+// (microseconds) between two calls.
+static void cpuLoad(int &l0, int &l1, unsigned &tasks) {
+  static TaskStatus_t ts[48];
+  static uint32_t prevIdle[2], prevWall;
+  static bool have = false;
+  l0 = l1 = -1;
+  tasks = uxTaskGetNumberOfTasks();
+  if (tasks > 48) return;
+  uint32_t total = 0;
+  const UBaseType_t n = uxTaskGetSystemState(ts, 48, &total);
+  uint32_t idle[2] = {0, 0}; bool got[2] = {false, false};
+  for (UBaseType_t i = 0; i < n; i++)
+    if (!strncmp(ts[i].pcTaskName, "IDLE", 4) && (ts[i].pcTaskName[4] == '0' || ts[i].pcTaskName[4] == '1')) { const int c = ts[i].pcTaskName[4] - '0'; idle[c] = ts[i].ulRunTimeCounter; got[c] = true; }
+  const uint32_t wall = (uint32_t)esp_timer_get_time();
+  if (have && got[0] && got[1] && wall != prevWall) {
+    const uint32_t dw = wall - prevWall;
+    for (int c = 0; c < 2; c++) {
+      int pct = 100 - (int)(((uint64_t)(uint32_t)(idle[c] - prevIdle[c]) * 100) / dw);
+      pct = pct < 0 ? 0 : pct > 100 ? 100 : pct;
+      (c ? l1 : l0) = pct;
+    }
+  }
+  prevIdle[0] = idle[0]; prevIdle[1] = idle[1]; prevWall = wall; have = got[0] && got[1];
+}
+
+static void publishStats() {
+  int l0, l1; unsigned tasks;
+  cpuLoad(l0, l1, tasks);
+  char ts[32]; tsStr(ts, sizeof ts, millis());
+  const size_t rf = heap_caps_get_free_size(MALLOC_CAP_INTERNAL), rt = heap_caps_get_total_size(MALLOC_CAP_INTERNAL),
+               rm = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL), rb = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+               pf = heap_caps_get_free_size(MALLOC_CAP_SPIRAM), pt = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+  char b[420];
+  int n = snprintf(b, sizeof b,
+    "{\"t\":%lu,\"up\":%lu,\"mhz\":%u,\"l0\":%d,\"l1\":%d,\"tasks\":%u,"
+    "\"ram\":{\"free\":%u,\"tot\":%u,\"min\":%u,\"big\":%u},\"ps\":{\"free\":%u,\"tot\":%u},"
+    "\"sd\":{\"on\":%d,\"mb\":%lu,\"used\":%lu}%s}",
+    (unsigned long)millis(), (unsigned long)(millis() / 1000), (unsigned)getCpuFrequencyMhz(), l0, l1, tasks,
+    (unsigned)rf, (unsigned)rt, (unsigned)rm, (unsigned)rb, (unsigned)pf, (unsigned)pt,
+    sdMounted ? 1 : 0, (unsigned long)sdMB, (unsigned long)sdUsedMB, ts);
+  if (n > 0 && n < (int)sizeof b && mqtt.publish(MQTT_TOPIC_STATS, b)) pubTotal++;
+}
+
+// Static facts and the peripheral list. Retained, so a viewer that connects later gets it at once; sent again on every connect and
+// whenever a module comes or goes. A peripheral's "ok" is what the firmware can tell about it: a library that reports itself
+// enabled, a sensor that answers, a link that is up. External modules are listed only while they are there.
+static void publishInfo() {
+  static char b[1500];
+  size_t o = 0;
+  auto add = [&](const char *fmt, ...) { va_list a; va_start(a, fmt); int n = vsnprintf(b + o, sizeof b - o, fmt, a); va_end(a); if (n > 0 && o + n < sizeof b) o += n; };
+  esp_chip_info_t ci; esp_chip_info(&ci);
+  char ts[32]; tsStr(ts, sizeof ts, millis());
+  add("{\"t\":%lu,\"chip\":\"%s\",\"rev\":%u,\"cores\":%u,\"idf\":\"%s\",\"fw\":\"%s %s\"", (unsigned long)millis(), ESP.getChipModel(), (unsigned)ESP.getChipRevision(), (unsigned)ci.cores, ESP.getSdkVersion(), __DATE__, __TIME__);
+  add(",\"flash\":{\"size\":%u,\"app\":%u,\"free\":%u", (unsigned)ESP.getFlashChipSize(), (unsigned)ESP.getSketchSize(), (unsigned)ESP.getFreeSketchSpace());
+  nvs_stats_t st;
+  if (nvs_get_stats(nullptr, &st) == ESP_OK) add(",\"nvs\":[%u,%u]", (unsigned)st.used_entries, (unsigned)st.total_entries);
+  add(",\"parts\":[");
+  bool first = true;
+  esp_partition_iterator_t it = esp_partition_find(ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, nullptr);
+  for (; it; it = esp_partition_next(it)) {
+    const esp_partition_t *p = esp_partition_get(it);
+    add("%s{\"n\":\"%s\",\"sz\":%u}", first ? "" : ",", p->label, (unsigned)p->size); first = false;
+  }
+  add("]}");
+  float v = 0; xSemaphoreTake(mtx, portMAX_DELAY); v = live.pw.v; xSemaphoreGive(mtx);
+  add(",\"periph\":[");
+  add("{\"n\":\"Display\",\"d\":\"ST7123, 720 x 1280, MIPI-DSI\",\"ok\":%d}", M5.Display.width() > 0 ? 1 : 0);
+  add(",{\"n\":\"Touch\",\"d\":\"ST7123 controller, internal I2C\",\"ok\":%d}", M5.Touch.isEnabled() ? 1 : 0);
+  add(",{\"n\":\"IMU\",\"d\":\"BMI270, internal I2C\",\"ok\":%d}", M5.Imu.isEnabled() ? 1 : 0);
+  add(",{\"n\":\"Power monitor\",\"d\":\"INA226 on the battery path, internal I2C\",\"ok\":%d}", v > 1.0f ? 1 : 0);
+  add(",{\"n\":\"Microphone\",\"d\":\"audio codec, I2S\",\"ok\":%d}", M5.Mic.isEnabled() ? 1 : 0);
+  add(",{\"n\":\"Wi-Fi\",\"d\":\"ESP32-C6 over esp-hosted, SDIO\",\"ok\":%d}", wifiUp ? 1 : 0);
+  if (sdMounted) add(",{\"n\":\"SD card\",\"d\":\"microSD, SDMMC slot 0\",\"ok\":1}");
+  if (joyPresent) add(",{\"n\":\"Joystick 2 Unit\",\"d\":\"I2C 0x63 on Port A\",\"ok\":1}");
+  add("]%s}", ts);
+  b[o < sizeof b ? o : sizeof b - 1] = 0;
+  if (o > 0 && mqtt.publish(MQTT_TOPIC_INFO, (const uint8_t *)b, o, true)) pubTotal++;
 }
 
 // A slow connect only delays this task; samples are dropped, not backlogged.
@@ -1258,7 +1417,9 @@ static void txTask(void *) {
     while (xQueueReceive(powerQ, &pw, 0) == pdTRUE) if (mqttUp) publishPower(pw);
     JoyS jy;
     while (xQueueReceive(joyQ, &jy, 0) == pdTRUE) if (mqttUp) publishJoy(jy);
-    if (capsPending && mqttUp) { capsPending = false; publishCaps(); }
+    static uint32_t statsDue = 0;
+    if (capsPending && mqttUp) { capsPending = false; publishCaps(); publishInfo(); statsDue = millis(); }   // stats follow at once
+    if (mqttUp && (int32_t)(millis() - statsDue) >= 0) { statsDue = millis() + (rateSlow ? 30000 : 5000); publishStats(); }
     static AudioChunk ac;
     while (xQueueReceive(audioQ, &ac, 0) == pdTRUE) if (mqttUp && mqtt.publish(MQTT_TOPIC_AUDIO, (const uint8_t *)ac.pcm, sizeof ac.pcm)) pubTotal++;
     uint32_t now = millis();
@@ -1310,7 +1471,7 @@ void setup() {
   if (cfg.useCert) { wifiClient.setCertificate(cfg.crt.c_str()); wifiClient.setPrivateKey(cfg.key.c_str()); }
   wifiClient.setHandshakeTimeout(10);
   mqtt.setServer(cfg.host.c_str(), cfg.port);
-  mqtt.setBufferSize(MIC_N * 2 + 64);    // must hold one audio block + topic
+  mqtt.setBufferSize(2048);              // must hold one audio block (MIC_N * 2 + 64 = 1088) and the tab5/info message
   mqtt.setCallback(onMessage);
 
 
@@ -1330,6 +1491,7 @@ void setup() {
   xTaskCreatePinnedToCore(powerTask,  "power",  6144,  nullptr, 2, nullptr, CORE_IO);
   xTaskCreatePinnedToCore(micTask,    "mic",    6144,  nullptr, 2, nullptr, CORE_IO);
   xTaskCreatePinnedToCore(joyTask,    "joy",    4096,  nullptr, 2, nullptr, CORE_IO);
+  xTaskCreatePinnedToCore(sdTask,     "sd",     6144,  nullptr, 1, nullptr, CORE_IO);
 }
 
 void loop() { vTaskDelete(nullptr); }              // all work lives in the pinned tasks

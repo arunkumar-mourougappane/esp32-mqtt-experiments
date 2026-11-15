@@ -97,10 +97,20 @@
   .seg button + button { border-left: 1px solid var(--hair); }
   .seg button[aria-pressed="true"] { background: var(--wash); color: var(--ink); font-weight: 650; }
   .spacer { flex: 1; }
+  .clock { font-variant-numeric: tabular-nums; font-weight: 650; color: var(--ink); white-space: nowrap; padding-left: 4px; }
+  .clock::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 7px; vertical-align: 1px; background: var(--muted); }
+  .clock.ok::before { background: var(--good); } .clock.wait::before { background: var(--warn); }
 
   .board { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); gap: 14px;
            grid-template-areas: "power accel" "gyro joy"; }
   .board.three { grid-template-areas: "power accel" "gyro gyro"; }          /* no joystick: the last card takes the whole bottom row */
+  .board.dev { grid-template-areas: "cpu mem" "stor per"; }
+  #sec-cpu { grid-area: cpu; } #sec-mem { grid-area: mem; } #sec-stor { grid-area: stor; } #sec-per { grid-area: per; }
+  .meter.tight { margin-top: 8px; }
+  .periph { list-style: none; margin: 0; padding: 0; overflow: auto; min-height: 0; flex: 1; }
+  .periph li { display: grid; grid-template-columns: 18px 150px 1fr; gap: 6px 10px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--hair); font-size: 13px; }
+  .periph li span:first-child { font-weight: 700; text-align: center; }
+  .periph li b { font-weight: 600; } .periph li small { color: var(--muted); font-size: 12px; }
   #sec-power { grid-area: power; } #sec-accel { grid-area: accel; } #sec-gyro { grid-area: gyro; } #sec-joy { grid-area: joy; }
   section.sheet { border: 1px solid var(--hair); border-radius: 12px; padding: 10px 14px 12px; display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
   .sh { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; min-width: 0; }
@@ -166,6 +176,7 @@
     <div class="status" aria-live="polite">
       <div><span class="glyph" id="g-broker">·</span><span id="t-broker">Connecting to the broker</span></div>
       <div><span class="glyph" id="g-stream">·</span><span id="t-stream">Waiting for the Tab5</span></div>
+      <div id="st-sd" hidden><span class="glyph" id="g-sd">✓</span><span id="t-sd">SD card</span></div>
       <div id="st-joy" hidden><span class="glyph" id="g-joyst">·</span><span id="t-joyst">Joystick: no data yet</span></div>
     </div>
 
@@ -222,12 +233,13 @@
 
   <main id="main">
     <div class="filters">
-      <div class="grp"><span>History</span>
+      <div class="seg" id="pagesw" role="group" aria-label="Live readings or device details"><button data-v="live">Live</button><button data-v="device">Device</button></div>
+      <div class="grp" data-live><span>History</span>
         <div class="seg" id="win" role="group" aria-label="History window">
           <button data-v="10">10 s</button><button data-v="30">30 s</button><button data-v="60">60 s</button>
         </div>
       </div>
-      <div class="grp"><span>Show</span>
+      <div class="grp" data-live><span>Show</span>
         <div class="seg" id="view" role="group" aria-label="Charts or tables">
           <button data-v="charts">Charts</button><button data-v="tables">Tables</button>
         </div>
@@ -235,6 +247,7 @@
       <span class="spacer"></span>
       <span class="grp" id="rate"></span>
       <button class="link" id="detect" title="Ask the Tab5 which modules it has (a joystick, for example) and show a card for each">Detect modules</button>
+      <span id="clock" class="clock" title="Tab5 clock: no time yet">--:--:--</span>
     </div>
 
     <div class="board three" id="board">
@@ -292,6 +305,49 @@
       </div>
     </section>
     </div>
+
+    <div class="board dev" id="devboard" hidden>
+      <section class="sheet" id="sec-cpu">
+        <div class="sh"><h2>Processor</h2><p id="cpu-sub">Waiting for the Tab5.</p><div class="keys" id="k-cpu"></div></div>
+        <div class="split">
+          <div class="col side wide">
+            <div class="meter tight"><div class="row"><span>Core 0, display</span><b id="v-l0">–</b></div><div class="bar" role="meter" aria-label="Core 0 load" aria-valuemin="0" aria-valuemax="100" id="b-l0"><i id="f-l0"></i></div></div>
+            <div class="meter tight"><div class="row"><span>Core 1, sensors and MQTT</span><b id="v-l1">–</b></div><div class="bar" role="meter" aria-label="Core 1 load" aria-valuemin="0" aria-valuemax="100" id="b-l1"><i id="f-l1"></i></div></div>
+            <dl class="vitals" style="margin-top:12px">
+              <dt>Clock</dt><dd id="v-mhz">–</dd><dt>Tasks</dt><dd id="v-tasks">–</dd><dt>Up for</dt><dd id="v-up">–</dd><dt>Chip temperature</dt><dd id="v-temp">–</dd>
+            </dl>
+          </div>
+          <div class="col fill"><div class="chartwrap"><canvas id="c-cpu" role="img" aria-label="Processor load over the last five minutes"></canvas></div></div>
+        </div>
+      </section>
+
+      <section class="sheet" id="sec-mem">
+        <div class="sh"><h2>Memory</h2><p>Internal RAM is what the firmware and TLS need; PSRAM holds the screen buffers.</p><div class="keys" id="k-mem"></div></div>
+        <div class="split">
+          <div class="col side wide">
+            <div class="meter tight"><div class="row"><span>Internal RAM</span><b id="v-ram">–</b></div><div class="bar" role="meter" aria-label="Internal RAM in use" aria-valuemin="0" aria-valuemax="100" id="b-ram"><i id="f-ram"></i></div></div>
+            <div class="meter tight"><div class="row"><span>PSRAM</span><b id="v-ps">–</b></div><div class="bar" role="meter" aria-label="PSRAM in use" aria-valuemin="0" aria-valuemax="100" id="b-ps"><i id="f-ps"></i></div></div>
+            <dl class="vitals" style="margin-top:12px">
+              <dt>Lowest free since boot</dt><dd id="v-rmin">–</dd><dt>Largest free block</dt><dd id="v-rbig">–</dd>
+            </dl>
+          </div>
+          <div class="col fill"><div class="chartwrap"><canvas id="c-mem" role="img" aria-label="Free internal RAM over the last five minutes"></canvas></div></div>
+        </div>
+      </section>
+
+      <section class="sheet" id="sec-stor">
+        <div class="sh"><h2>Storage</h2><p>The Tab5's flash is NOR, not NAND.</p></div>
+        <div class="meter tight"><div class="row"><span>Firmware in its slot</span><b id="v-app">–</b></div><div class="bar" role="meter" aria-label="Firmware size against its slot" aria-valuemin="0" aria-valuemax="100" id="b-app"><i id="f-app"></i></div></div>
+        <div class="meter tight"><div class="row"><span>Settings (NVS entries)</span><b id="v-nvs">–</b></div><div class="bar" role="meter" aria-label="NVS entries in use" aria-valuemin="0" aria-valuemax="100" id="b-nvs"><i id="f-nvs"></i></div></div>
+        <div class="meter tight"><div class="row"><span>SD card</span><b id="v-sd">No card</b></div><div class="bar" role="meter" aria-label="SD card space in use" aria-valuemin="0" aria-valuemax="100" id="b-sd"><i id="f-sd"></i></div></div>
+        <dl class="vitals" id="d-parts" style="margin-top:12px"></dl>
+      </section>
+
+      <section class="sheet" id="sec-per">
+        <div class="sh"><h2>Peripherals</h2><p id="per-sub">Waiting for the Tab5.</p></div>
+        <ul class="periph" id="l-per"></ul>
+      </section>
+    </div>
   </main>
 </div>
 <div id="tip" role="status"></div>
@@ -299,7 +355,7 @@
 <script src="mqtt.min.js"></script>
 <script>
 "use strict";
-const URL_ = "ws://localhost:9001", T_IMU = "tab5/imu", T_PWR = "tab5/power", T_AUDIO = "tab5/audio", T_CMD = "tab5/cmd", T_JOY = "tab5/joy", T_CAPS = "tab5/caps";
+const URL_ = "ws://localhost:9001", T_IMU = "tab5/imu", T_PWR = "tab5/power", T_AUDIO = "tab5/audio", T_CMD = "tab5/cmd", T_JOY = "tab5/joy", T_STATS = "tab5/stats", T_INFO = "tab5/info", T_CAPS = "tab5/caps";
 const $ = id => document.getElementById(id);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const MINUS = "−";
@@ -309,7 +365,8 @@ const store = { get(k, d) { try { return localStorage.getItem(k) || d; } catch {
 
 // ---------- data ----------
 const imu = [], pwr = [], joy = [];
-let caps = null, capsTries = 0, pw = null, lastImu = null, imuRx = 0, pwrRx = 0, rxTimes = [], audioRx = [], lastJoy = null, joyRx = 0;
+let caps = null, capsMsg = null, capsTries = 0, pw = null, lastImu = null, imuRx = 0, pwrRx = 0, rxTimes = [], audioRx = [], lastJoy = null, joyRx = 0, infoMsg = null, lastStats = null, statsRx = 0;
+const stats = [];      // tab5/stats readings, one every 5 s: the last 10 minutes are kept
 
 function push(arr, m, keep) {
   if (arr.length && m.t < arr[arr.length - 1].t - 2000) arr.length = 0;     // device rebooted
@@ -321,14 +378,16 @@ function push(arr, m, keep) {
 const client = mqtt.connect(URL_, { reconnectPeriod: 2000 });
 // Ask the Tab5 what it has. It answers on tab5/caps, and also announces itself on connect and when a module is plugged in
 // or out. An older firmware does not answer: then the joystick card follows the data instead (see syncModules).
-client.on("connect", () => { client.subscribe([T_IMU, T_PWR, T_AUDIO, T_JOY, T_CAPS]); client.publish(T_CMD, "caps"); capsTries = 0; });
+client.on("connect", () => { client.subscribe([T_IMU, T_PWR, T_AUDIO, T_JOY, T_STATS, T_INFO, T_CAPS]); client.publish(T_CMD, "caps"); capsTries = 0; });
 setInterval(() => { if (client.connected && !caps && capsTries < 5) { capsTries++; client.publish(T_CMD, "caps"); } }, 2000);
 client.on("message", (topic, payload) => {
   if (topic === T_AUDIO) return playAudio(payload);
   let m; try { m = JSON.parse(payload.toString()); } catch { return; }
   const now = performance.now();
   if (topic === T_PWR) { pw = m; pwrRx = now; push(pwr, m, 700); }
-  else if (topic === T_CAPS) { caps = new Set(m.caps || []); }
+  else if (topic === T_STATS) { lastStats = m; statsRx = now; push(stats, m, 120); }
+  else if (topic === T_INFO) { infoMsg = m; }
+  else if (topic === T_CAPS) { caps = new Set(m.caps || []); capsMsg = m; }
   else if (topic === T_JOY) { lastJoy = m; joyRx = now; if (m.ok) push(joy, m, 1600); }
   else { lastImu = m; imuRx = now; rxTimes.push(now); push(imu, m, 3500); }
 });
@@ -666,6 +725,18 @@ function readouts(now) {
   else if (imuRx) status("g-stream", "t-stream", "✕", "bad", "Tab5 stopped sending. Check it is on and on Wi-Fi.");
   else status("g-stream", "t-stream", "!", "wait", "No data yet. Check the Tab5 is on and on Wi-Fi.");
   setText("rate", age < 2000 ? `Updated ${rxTimes.length} readings/s` : "");
+  // The Tab5 stamps every reading with Unix time in ms ("ts") once its clock is set by NTP. The difference to this computer's clock
+  // includes the time the message took to arrive, so it is a rough check, not a measurement of the clock error.
+  const clk = $("clock");
+  if (client.connected && age < 2000 && lastImu && lastImu.ts) {
+    const d = lastImu.ts - (Date.now() - (now - imuRx));       // against the moment the message arrived, so a late message is not read as a clock error
+    const inStep = Math.abs(d) < 2000;
+    setText("clock", new Date(lastImu.ts + (now - imuRx)).toLocaleTimeString());
+    clk.className = "clock " + (inStep ? "ok" : "wait");
+    clk.title = "Tab5 clock" + (inStep ? ", in step with this computer" : `, ${sgn(d / 1000, 0)} s from this computer`) + (capsMsg && capsMsg.ntp ? `. Time server: ${capsMsg.ntp}` : "");
+  } else { setText("clock", "--:--:--"); clk.className = "clock"; clk.title = "Tab5 clock: no time yet"; }
+  $("st-sd").hidden = !(caps && caps.has("sdcard"));
+  if (capsMsg && capsMsg.sdmb) setText("t-sd", "SD card mounted, " + (capsMsg.sdmb / 1024).toFixed(1) + " GB");
   const jage = joyRx ? now - joyRx : Infinity;
   if (!client.connected) status("g-joyst", "t-joyst", "·", "", "Joystick: waiting for the broker");
   else if (jage < 3000 && lastJoy && lastJoy.ok) status("g-joyst", "t-joyst", "✓", "ok", "Joystick connected");
@@ -726,11 +797,102 @@ function syncModules(now) {
   $("board").classList.toggle("three", !joyOn);
 }
 
+// ---------- the Device page: processor, memory, storage and peripherals (tab5/stats and tab5/info) ----------
+let pageSel = store.get("page", "live");
+function applyPage() {
+  mark("pagesw", pageSel);
+  const dev = pageSel === "device";
+  $("board").hidden = dev; $("devboard").hidden = !dev;
+  document.querySelectorAll("[data-live]").forEach(e => { e.hidden = dev; });
+}
+$("pagesw").onclick = e => { const b = e.target.closest("button"); if (b) { pageSel = b.dataset.v; store.set("page", pageSel); applyPage(); } };
+applyPage();
+
+const kB = v => (v / 1024).toFixed(0) + " kB";
+const MB = v => (v / 1048576).toFixed(v < 10485760 ? 2 : 1) + " MB";
+const fmtUp = s => s < 60 ? s + " s" : s < 3600 ? Math.floor(s / 60) + " min " + (s % 60) + " s" : Math.floor(s / 3600) + " h " + Math.floor(s % 3600 / 60) + " min";
+function meter(id, used, total, text) {          // fill a bar: amber from 80 %, red from 92 %
+  const pc = total > 0 ? clamp(used / total * 100, 0, 100) : 0, f = $("f-" + id);
+  f.style.width = pc + "%"; f.className = pc >= 92 ? "crit" : pc >= 80 ? "low" : "";
+  $("b-" + id).setAttribute("aria-valuenow", Math.round(pc)); setText("v-" + id, text);
+}
+(function () {                                    // legends
+  const mk = (id, items) => { const el = $(id); items.forEach(([n, c]) => { const sp = document.createElement("span"), ic = document.createElement("i"); ic.style.background = `var(--${c})`; sp.append(ic, n); el.append(sp); }); };
+  mk("k-cpu", [["Core 0", "s1"], ["Core 1", "s2"]]); mk("k-mem", [["Internal RAM free", "s1"]]);
+})();
+
+// A small time-series chart for the stats arrays: last five minutes, fixed 0..max axis, no tooltip (the numbers are beside it).
+function drawMini(id, arr, series, max, unit) {
+  const cv = $(id); if (!cv.offsetWidth) return;
+  const { g, w, h } = fit(cv);
+  const pl = 56, pr = 12, pt = 8, pb = 22, pw_ = w - pl - pr, ph = h - pt - pb, span = 300000;
+  g.font = FONT; g.textBaseline = "middle";
+  g.strokeStyle = C.grid; g.lineWidth = 1; g.fillStyle = C.muted; g.textAlign = "right";
+  for (let i = 0; i <= 2; i++) { const y = pt + ph * (1 - i / 2); g.beginPath(); g.moveTo(pl, y + .5); g.lineTo(w - pr, y + .5); g.stroke(); g.fillText(String(Math.round(max * i / 2)) + (i === 2 ? " " + unit : ""), pl - 6, y); }
+  g.textAlign = "left"; g.fillText("5 min ago", pl, h - 8); g.textAlign = "right"; g.fillText("now", w - pr, h - 8);
+  const n = arr.length;
+  if (n < 2) { g.textAlign = "center"; g.fillText("Waiting for data from the Tab5.", pl + pw_ / 2, pt + ph / 2); return; }
+  const tEnd = arr[n - 1].t;
+  g.lineWidth = 2; g.lineJoin = "round";
+  for (const sr of series) {
+    g.strokeStyle = C[sr.c]; g.beginPath(); let started = false;
+    for (let i = 0; i < n; i++) {
+      const dt = tEnd - arr[i].t; if (dt > span) continue;
+      const v = sr.f(arr[i]); if (v == null || v < 0) continue;
+      const x = pl + (1 - dt / span) * pw_, y = pt + ph * (1 - clamp(v / max, 0, 1));
+      if (started) g.lineTo(x, y); else { g.moveTo(x, y); started = true; }
+    }
+    g.stroke();
+  }
+}
+
+function drawDevice(now) {
+  const st = lastStats && now - statsRx < 15000 ? lastStats : null, inf = infoMsg;
+  if (inf) setText("cpu-sub", `${inf.chip} rev ${(inf.rev / 100).toFixed(2)}, ${inf.cores} cores. Core 0 draws the screen; core 1 runs the sensors and MQTT.`);
+  if (st) {
+    setText("v-l0", st.l0 < 0 ? "–" : st.l0 + "%"); setText("v-l1", st.l1 < 0 ? "–" : st.l1 + "%");
+    for (const k of ["l0", "l1"]) { const f = $("f-" + k); f.style.width = Math.max(0, st[k]) + "%"; $("b-" + k).setAttribute("aria-valuenow", st[k]); }
+    setText("v-mhz", st.mhz + " MHz"); setText("v-tasks", String(st.tasks)); setText("v-up", fmtUp(st.up));
+    meter("ram", st.ram.tot - st.ram.free, st.ram.tot, `${kB(st.ram.tot - st.ram.free)} of ${kB(st.ram.tot)}`);
+    meter("ps", st.ps.tot - st.ps.free, st.ps.tot, `${MB(st.ps.tot - st.ps.free)} of ${MB(st.ps.tot)}`);
+    setText("v-rmin", kB(st.ram.min)); setText("v-rbig", kB(st.ram.big));
+    if (st.sd.on) meter("sd", st.sd.used, st.sd.mb, `${MB(st.sd.used * 1048576)} of ${(st.sd.mb / 1024).toFixed(1)} GB`);
+    else meter("sd", 0, 1, "No card");
+  }
+  if (pw && now - pwrRx < 3000) setText("v-temp", pw.t_chip.toFixed(0) + " °C");
+  if (inf && inf.flash) {
+    const fl = inf.flash, slot = (inf.flash.parts.find(p => p.n === "app0") || {}).sz || fl.app + fl.free;
+    meter("app", fl.app, slot, `${MB(fl.app)} of ${MB(slot)}`);
+    if (fl.nvs) meter("nvs", fl.nvs[0], fl.nvs[1], `${fl.nvs[0]} of ${fl.nvs[1]}`);
+    const dl = $("d-parts"), want = fl.parts.map(p => p.n + p.sz).join();
+    if (dl.dataset.k !== want) {
+      dl.dataset.k = want; dl.replaceChildren();
+      const h = document.createElement("dt"); h.textContent = `Flash ${MB(fl.size)}, partitions`; h.style.gridColumn = "1 / -1"; h.style.fontWeight = "600"; dl.append(h);
+      fl.parts.forEach(p => { const a = document.createElement("dt"), b = document.createElement("dd"); a.textContent = p.n; b.textContent = p.sz >= 1048576 ? MB(p.sz) : kB(p.sz); dl.append(a, b); });
+    }
+  }
+  if (inf && inf.periph) {
+    const ul = $("l-per"), key = JSON.stringify(inf.periph);
+    if (ul.dataset.k !== key) {
+      ul.dataset.k = key; ul.replaceChildren();
+      inf.periph.forEach(p => {
+        const li = document.createElement("li"), g = document.createElement("span"), n = document.createElement("b"), d = document.createElement("small");
+        g.textContent = p.ok ? "✓" : "✕"; g.className = p.ok ? "ok" : "bad"; n.textContent = p.n; d.textContent = p.d; li.append(g, n, d); ul.append(li);
+      });
+    }
+    setText("per-sub", `${inf.periph.length} devices. Firmware built ${inf.fw}, ESP-IDF ${inf.idf}.`);
+  }
+  drawMini("c-cpu", stats, [{ c: "s1", f: r => r.l0 }, { c: "s2", f: r => r.l1 }], 100, "%");
+  const ramMax = lastStats ? Math.ceil(lastStats.ram.tot / 1024 / 100) * 100 : 600;
+  drawMini("c-mem", stats, [{ c: "s1", f: r => r.ram.free / 1024 }], ramMax, "kB");
+}
+
 // ---------- loop ----------
 function frame(now) {
   palette(); syncModules(now); readouts(now);
   for (const ch of charts) drawChart(ch, now);
-  drawScope(); drawDials(); if (joyShown) drawJoyPad(); updateTables(now);
+  if (pageSel === "device") drawDevice(now);
+  else { drawScope(); drawDials(); if (joyShown) drawJoyPad(); updateTables(now); }
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
