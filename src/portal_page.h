@@ -50,7 +50,7 @@ a{color:var(--acc)}
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const NAMES=['Wi-Fi','Broker','Certificates','PIN','Check'];
-const S={step:0,ssid:'',wifiPass:'',host:'',port:'',auth:'cert',user:'',pass:'',pin:'',pin2:'',
+const S={step:0,ssid:'',wifiPass:'',ntp:'',host:'',port:'',auth:'cert',user:'',pass:'',pin:'',pin2:'',
   pem:{ca:'',crt:'',key:''},info:{ca:null,crt:null,key:null},paste:{ca:false,crt:false,key:false},
   nets:null,sv:{},busy:false,err:'',done:false};
 const CERTS=[
@@ -66,7 +66,7 @@ async function api(p,body){
 async function boot(){
   try{S.sv=await api('/api/state');}catch(e){S.sv={};}
   const v=S.sv;
-  if(v.configured){S.ssid=v.ssid||'';S.host=v.host||'';S.auth=v.useCert?'cert':'pw';S.port=String(v.port||'');S.user=v.user||'';}
+  if(v.configured){S.ssid=v.ssid||'';S.ntp=v.ntp||'';S.host=v.host||'';S.auth=v.useCert?'cert':'pw';S.port=String(v.port||'');S.user=v.user||'';}
   if(!S.port)S.port=S.auth==='cert'?'8884':'8883';
   render();scan();
 }
@@ -78,7 +78,8 @@ function keepWifi(){return S.sv.configured&&S.sv.hasWifiPass&&S.ssid===S.sv.ssid
 function openNet(){const n=(S.nets||[]).find(x=>x.ssid===S.ssid);return n&&n.open;}
 function ok(){
   switch(S.step){
-   case 0:return S.ssid.length>0&&(S.wifiPass.length>=8||(keepWifi()&&!S.wifiPass)||(openNet()&&!S.wifiPass));
+   case 0:if(S.ntp&&!/^[A-Za-z0-9._:-]{1,253}$/.test(S.ntp))return false;
+     return S.ssid.length>0&&(S.wifiPass.length>=8||(keepWifi()&&!S.wifiPass)||(openNet()&&!S.wifiPass));
    case 1:{const p=+S.port;if(!S.host||!(p>0&&p<65536))return false;
      if(S.auth==='pw'){return S.user&&(S.pass||(S.sv.hasBrokerPass&&S.sv.user===S.user&&!S.sv.useCert));}return true;}
    case 2:return need().every(c=>S.info[c.k]&&S.info[c.k].ok||(!S.pem[c.k]&&S.sv[c.has]&&S.sv.configured&&!S.sv.recheck));
@@ -100,6 +101,8 @@ function render(){
     h+='<div class="f"><label for="ssid">Network name</label><input type="text" id="ssid" value="'+esc(S.ssid)+'" autocapitalize="none" autocomplete="off"></div>';
     h+='<div class="f"><label for="wp">Wi-Fi password</label><input type="password" id="wp" value="'+esc(S.wifiPass)+'" autocomplete="off" placeholder="'+(keepWifi()?'Unchanged. Type to replace':'')+'"></div>';
     h+='<p class="s"><a href="#" id="rescan">Scan again</a></p>';
+    h+='<div class="f"><label for="ntp">Time server (optional)</label><input type="text" class="mono" id="ntp" value="'+esc(S.ntp)+'" placeholder="pool.ntp.org" autocapitalize="none" autocomplete="off"></div>';
+    h+='<p class="s">The Tab5 sets its clock from this server, and needs the right time before it can check the broker\'s certificate. Leave it blank for pool.ntp.org. On a network without internet, enter a server on your own network.</p>';
   }
   if(S.step===1){
     h+='<h1>Connect to your broker</h1><p class="s">Where the Tab5 sends its readings.</p>';
@@ -140,7 +143,7 @@ function render(){
     const R=(a,b)=>'<div class="row"><span>'+a+'</span><span>'+esc(b)+'</span></div>';
     const kept=(typed,has)=>typed?'••••••••':(has?'Unchanged':'(none)');
     h+='<h1>Check and save</h1><p class="s">Passwords and the key are stored encrypted and will not be shown again.</p><div class="card" style="padding:4px 16px">';
-    h+=R('Wi-Fi',S.ssid)+R('Wi-Fi password',kept(S.wifiPass,keepWifi()))+R('Broker',S.host+':'+S.port);
+    h+=R('Wi-Fi',S.ssid)+R('Wi-Fi password',kept(S.wifiPass,keepWifi()))+R('Time server',S.ntp||'pool.ntp.org (default)')+R('Broker',S.host+':'+S.port);
     h+=R('Broker CA',S.info.ca&&S.info.ca.ok?S.info.ca.name:'Unchanged');
     if(S.auth==='pw')h+=R('Username',S.user)+R('Broker password',kept(S.pass,S.sv.hasBrokerPass&&!S.sv.useCert));
     else h+=R('Device certificate',S.info.crt&&S.info.crt.ok?S.info.crt.name:'Unchanged')+R('Device key',S.info.key&&S.info.key.ok?'••••••••':'Unchanged');
@@ -153,7 +156,7 @@ function render(){
 }
 function bind(){
   const v=(id,k)=>{const e=$(id);if(e)e.oninput=()=>{S[k]=e.value;if(k==='ssid')S.err='';chk();};};
-  v('ssid','ssid');v('wp','wifiPass');v('host','host');v('port','port');v('user','user');v('pass','pass');v('pin','pin');v('pin2','pin2');
+  v('ssid','ssid');v('wp','wifiPass');v('ntp','ntp');v('host','host');v('port','port');v('user','user');v('pass','pass');v('pin','pin');v('pin2','pin2');
   document.querySelectorAll('[data-n]').forEach(b=>b.onclick=()=>{S.ssid=S.nets[+b.dataset.n].ssid;render();});
   document.querySelectorAll('[data-a]').forEach(b=>b.onclick=()=>{const a=b.dataset.a;if(a!==S.auth){S.auth=a;if(S.port===(a==='pw'?'8884':'8883'))S.port=a==='pw'?'8883':'8884';}render();});
   document.querySelectorAll('[data-f]').forEach(e=>e.onchange=async()=>{if(e.files[0])setPem(e.dataset.f,await e.files[0].text());});
@@ -175,7 +178,7 @@ $('bk').onclick=()=>{if(S.step>0){S.step--;S.err='';render();}};
 $('nx').onclick=async()=>{
   if(S.step<4){S.step++;render();window.scrollTo(0,0);return;}
   S.busy=true;S.err='';render();
-  const b={ssid:S.ssid,wifiPass:S.wifiPass,host:S.host,port:+S.port,auth:S.auth,user:S.user,pass:S.pass,pin:S.pin,
+  const b={ssid:S.ssid,wifiPass:S.wifiPass,ntp:S.ntp,host:S.host,port:+S.port,auth:S.auth,user:S.user,pass:S.pass,pin:S.pin,
     ca:S.pem.ca,crt:S.auth==='cert'?S.pem.crt:'',key:S.auth==='cert'?S.pem.key:''};
   try{const r=await api('/api/save',b);
     if(r.ok){S.done=true;}else S.err=r.error||'The Tab5 did not accept the settings';}

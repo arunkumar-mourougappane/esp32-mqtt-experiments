@@ -259,6 +259,7 @@ static void handleSave() {
   const bool had = prov::configured();
   prov::Config c;
   c.ssid = d["ssid"] | "";  c.wifiPass = d["wifiPass"] | "";
+  c.ntp = d["ntp"] | "";
   c.host = d["host"] | "";  c.port = d["port"] | 0;
   c.useCert = std::string(d["auth"] | "pw") == "cert";
   c.user = d["user"] | "";  c.pass = d["pass"] | "";
@@ -271,6 +272,9 @@ static void handleSave() {
   if (ssidAfter.empty() || ssidAfter.size() > 32) { sendJson(200, errJson("The Wi-Fi name must be 1 to 32 characters.")); return; }
   if (!c.wifiPass.empty() && (c.wifiPass.size() < 8 || c.wifiPass.size() > 63)) { sendJson(200, errJson("The Wi-Fi password must be 8 to 63 characters.")); return; }
   if (c.wifiPass.empty() && !keepWifi) { /* an open network: allowed, stored as empty */ }
+  if (c.ntp.size() > 253) { sendJson(200, errJson("The time server name is too long.")); return; }
+  for (char ch : c.ntp)                                    // a name or an address: letters, digits, dot, dash, colon; blank is allowed
+    if (!(isalnum((unsigned char)ch) || ch == '.' || ch == '-' || ch == ':' || ch == '_')) { sendJson(200, errJson("The time server may only contain letters, digits, dots and dashes. Leave it blank for the default.")); return; }
   if (c.host.empty() || c.host.size() > 253) { sendJson(200, errJson("Enter the broker address.")); return; }
   if (c.port == 0 || c.port > 65535) { sendJson(200, errJson("The port must be between 1 and 65535.")); return; }
 

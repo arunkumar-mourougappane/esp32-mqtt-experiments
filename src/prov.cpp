@@ -108,6 +108,7 @@ bool save(const Config &c) {
   if (!c.host.empty()) nvs.putString("host", c.host.c_str());
   nvs.putUShort("port", c.port);
   nvs.putBool("cert", c.useCert);
+  nvs.putString("ntp", c.ntp.c_str());                    // always stored, so it can be set back to blank (the default)
   if (!c.user.empty()) nvs.putString("user", c.user.c_str());
   if (!c.pass.empty()) ok &= putSecret("mpw", c.pass);
   if (!c.ca.empty())  putBlob("ca", c.ca);
@@ -119,7 +120,7 @@ bool save(const Config &c) {
 bool load(Config &c) {
   if (!opened) return false;
   c = Config();
-  c.ssid = getText("ssid");  c.host = getText("host");  c.user = getText("user");
+  c.ssid = getText("ssid");  c.host = getText("host");  c.user = getText("user");  c.ntp = getText("ntp");
   c.port = nvs.getUShort("port", 8883);
   c.useCert = nvs.getBool("cert", false);
   c.ca = getBlob("ca");  c.crt = getBlob("crt");
@@ -229,6 +230,7 @@ std::string summaryJson() {
   o += "\"configured\":" + std::string(configured() ? "true" : "false");
   o += ",\"ssid\":\"" + jsonEscape(getText("ssid")) + "\"";
   o += ",\"hasWifiPass\":" + std::string(nvs.getBytesLength("wpw") ? "true" : "false");
+  o += ",\"ntp\":\"" + jsonEscape(getText("ntp")) + "\"";
   o += ",\"host\":\"" + jsonEscape(getText("host")) + "\"";
   o += ",\"port\":" + std::to_string(nvs.getUShort("port", 8883));
   o += ",\"useCert\":" + std::string(nvs.getBool("cert", false) ? "true" : "false");

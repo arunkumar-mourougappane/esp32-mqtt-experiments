@@ -14,6 +14,7 @@ namespace prov {
 
 struct Config {
   std::string ssid, wifiPass;          // Wi-Fi
+  std::string ntp;                     // time server; blank means the default (pool.ntp.org, then time.google.com)
   std::string host;  uint16_t port = 8883;
   bool        useCert = false;         // false: username + password; true: device certificate (mutual TLS)
   std::string user, pass;              // broker login (password path)
