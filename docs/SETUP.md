@@ -126,6 +126,8 @@ The page is plain HTTP, since there is no certificate a phone would trust for `1
 
 Pick your network from the scanned list, or type its name, and enter its password. **The Tab5 joins 2.4 GHz networks only.**
 
+Below the password is an optional **Time server**. The Tab5 sets its clock from an NTP server, and it needs the right time before it can check the broker's certificate, so it waits for the clock before connecting. Leave the field blank to use `pool.ntp.org` (then `time.google.com` as a fallback). On a network without internet, enter a time server on your own network, such as your router or another computer; the pool is then still tried second. The name may only contain letters, digits, dots, dashes, underscores and colons. The setup page's mockup below does not show this field yet.
+
 <p align="center"><img src="images/mockups/setup-1-wifi.png" alt="Design mockup of the setup page, step 1 of 5: choose your Wi-Fi" width="260"><br>Step 1 of 5.</p>
 
 ## 8. Setup page, step 2: broker
@@ -180,16 +182,17 @@ After the restart the Tab5 joins your Wi-Fi and the broker, and the dashboard ap
 - **Wi-Fi symbol**: arcs light up with signal strength (three green at -60 dBm or better, two green to -70, one amber to -80, one red below). While joining they sweep in amber.
 - **Broker symbol**: a two-unit server, green when connected. While connecting it is amber with the dots blinking in turn.
 - **`N msg/s >>> host:port`**: the arrows sweep while the link is up.
+- **SD card symbol**: a small green card shows while a microSD card is mounted. It appears a few seconds after you insert one and disappears when you pull it out.
 
 **If the saved settings do not work**, the Tab5 reopens setup by itself and shows the reason, for example "The broker refused the login". It does so if it cannot join the Wi-Fi within 90 s or reach the broker within 150 s. Setup then opens behind the PIN keypad; enter your PIN, fix the value and save again.
 
 ## 13. Open the viewer
 
-Open `viewer/index.html` in a browser. It opens straight from disk and connects to `ws://localhost:9001`, the broker's local-only WebSocket port. The side panel should show **Broker connected** and **Tab5 streaming**.
+Open `viewer/index.html` in a browser. It opens straight from disk and connects to `ws://localhost:9001`, the broker's local-only WebSocket port. The side panel should show **Broker connected**, **Tab5 streaming**, and a clock line with the Tab5's time and the time server it used. If a microSD card is in the Tab5, an **SD card** line shows its size.
 
 <p align="center"><img src="images/setup/viewer.png" alt="The viewer with live data: battery power, acceleration, rotation rate and the joystick card" width="900"><br>The viewer with the Tab5 streaming (a real screenshot). The Joystick card is there only because a Joystick 2 Unit was plugged in; without one you see three cards and the rotation card takes the whole bottom row.</p>
 
-Tilt the Tab5 and the acceleration and rotation plots move. If the side panel stays on "Waiting for the broker", the broker is not running (step 3).
+The **Device** button in the toolbar switches to the Tab5's processor, memory, storage and peripheral details. Tilt the Tab5 and the acceleration and rotation plots move. If the side panel stays on "Waiting for the broker", the broker is not running (step 3).
 
 ## 14. Optional: the test tools
 
@@ -235,4 +238,4 @@ That erases everything stored, so the Tab5 runs first-run setup again from step 
 | The Tab5 reopens setup after saving | Read the reason on its screen (wrong Wi-Fi password, broker refused the login, broker not reachable) and save again |
 | The broker is unreachable after your computer got a new LAN address | The server certificate is bound to the old address. Re-run `broker/setup-tls.sh`, restart the broker with `broker/run.sh`, and set the Tab5 up again with the new address. Reserving the address on your router avoids this |
 | The viewer shows "Tab5 stopped sending" | Check the Tab5 is on, on Wi-Fi, and that the broker is running |
-| A network without internet | The Tab5 waits for the clock (NTP) before it tries the broker, so a failed first connection there is reported as "could not reach the broker" |
+| A network without internet | The Tab5 waits for the clock (NTP) before it tries the broker, so without a reachable time server a failed first connection is reported as "could not reach the broker". Set a time server on your own network in step 7 |

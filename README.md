@@ -7,6 +7,8 @@ Firmware for the M5Stack Tab5 (ESP32-P4, with an ESP32-C6 coprocessor that provi
 - streams everything to an MQTT broker over Wi-Fi with TLS and a login;
 - takes commands back from the broker: screen on/off, brightness, microphone, sleep;
 - sets itself up on first run from a phone, with no Wi-Fi name, passwords or certificates built into the firmware;
+- stamps every reading with wall-clock time from NTP (the time server is a setting in first-run setup);
+- shows a symbol when a microSD card is mounted;
 - recovers on its own when the Wi-Fi/MQTT link wedges.
 
 A browser dashboard (`viewer/`) shows the stream, plots it, controls the Tab5 and plays the microphone.
@@ -71,6 +73,10 @@ With a Joystick 2 Unit on Port A, swipe sideways (left) on the dashboard to open
 - **Orientation:** which way is "up" depends on how the unit is held. Three buttons on the page (and in the viewer) fix it: Flip X, Flip Y and Swap X/Y, remembered across restarts. Hold the unit with its cable toward you: pushing away from you should move the dot up.
 - **Sleep mode** polls the unit at 2 Hz and sends 2 readings per second; awake it is read at 50 Hz and 25 readings per second are sent.
 
+### Device page in the viewer
+
+The toolbar switches the viewer between **Live** (the sensor cards) and **Device**, four cards fed by `tab5/stats` and `tab5/info`: **Processor** (load of each core, clock, task count, uptime, five minutes of history), **Memory** (internal RAM and PSRAM in use, the lowest free and the largest free block, five minutes of free RAM), **Storage** (firmware against its flash slot, NVS entries, SD card use, the partition table) and **Peripherals** (each device with a tick or a cross). The flash on the Tab5 is NOR, not NAND. The history lives in the page and starts empty when you open or reload it. Core 0 reads 100%: the display task draws as fast as it can and never lets the idle task run, so a high load there is normal, not a fault.
+
 ### Modules: pages and cards that appear when something is detected
 
 A page on the Tab5 and a card in the viewer exist only for modules that are there. The Tab5 announces what it has on `tab5/caps`; a viewer asks with the `caps` command when it connects (and again every 2 s, up to 5 times, until it gets an answer), and has a "Detect modules" button to ask again. The Tab5 also announces by itself after every connect and when a module is plugged in or out, so a joystick card appears within about a second of plugging the unit in and disappears when it is pulled out. With the joystick absent the viewer shows three cards and the rotation card takes the whole bottom row. A firmware that does not answer `caps` is handled too: the viewer then shows the joystick card only while joystick readings with a unit connected keep arriving.
@@ -81,7 +87,7 @@ Swipe down for the quick-settings panel and tap the padlock tile. The Tab5 resta
 
 ### Stored settings
 
-Settings are kept in the chip's NVS storage. The Wi-Fi password, the broker password and the device private key are encrypted with AES-256-GCM, using a key derived from the chip's unique ID, so they are not readable on the screen, the serial port or the network, and a raw dump of the flash does not contain them (a self-test checks this). The Wi-Fi name, broker address and the certificates are stored as they are. The PIN is stored only as a salted PBKDF2-HMAC-SHA256 hash. No eFuses are burned, so someone who dumps the flash and runs this firmware on the same chip could still recover the secrets. This keeps them away from the ordinary interfaces, not from a determined attacker with the hardware.
+Settings are kept in the chip's NVS storage. The time server, Wi-Fi name, broker address and certificates are stored as they are. The Wi-Fi password, the broker password and the device private key are encrypted with AES-256-GCM, using a key derived from the chip's unique ID, so they are not readable on the screen, the serial port or the network, and a raw dump of the flash does not contain them (a self-test checks this). The PIN is stored only as a salted PBKDF2-HMAC-SHA256 hash. No eFuses are burned, so someone who dumps the flash and runs this firmware on the same chip could still recover the secrets. This keeps them away from the ordinary interfaces, not from a determined attacker with the hardware.
 
 ### Recovery
 
@@ -95,11 +101,13 @@ The esp-hosted link to the C6 can wedge, after which TLS cannot get enough inter
 
 | Topic | Direction | Content |
 |---|---|---|
-| `tab5/imu` | Tab5 to broker | JSON: `t` (ms), `ax ay az` (g), `gx gy gz` (deg/s), `roll pitch yaw` (deg). 50/s awake, 2/s asleep |
-| `tab5/power` | Tab5 to broker | JSON, 10/s awake, 1/s asleep: `t v i p soc chg t_imu t_chip rssi heap mic avg wh eta scr bri slp`. `i` and `p` are positive when charging; `chg` is 1 charging, 0 idle, -1 discharging; `eta` is minutes to empty or full, -1 if not meaningful |
+| `tab5/imu` | Tab5 to broker | JSON: `t` (uptime, ms), `ts` (Unix time, ms), `ax ay az` (g), `gx gy gz` (deg/s), `roll pitch yaw` (deg). 50/s awake, 2/s asleep |
+| `tab5/power` | Tab5 to broker | JSON, 10/s awake, 1/s asleep: `t ts v i p soc chg t_imu t_chip rssi heap mic avg wh eta scr bri slp`. `i` and `p` are positive when charging; `chg` is 1 charging, 0 idle, -1 discharging; `eta` is minutes to empty or full, -1 if not meaningful |
 | `tab5/audio` | Tab5 to broker | Raw 16-bit mono PCM at 16 kHz in 1024-byte blocks, only while the microphone is on |
-| `tab5/joy` | Tab5 to broker | JSON, 25/s awake, 2/s asleep, and at once when the unit is plugged in or out: `t ok x y rx ry b fx fy sw`. `ok` is 1 when a unit is connected; `x`, `y` are -100.0 to +100.0 (percent of a full push, after the orientation switches); `rx`, `ry` are the unit's calibrated -4095 to +4095; `b` is 1 while the stick is pressed; `fx fy sw` are the orientation switches |
-| `tab5/caps` | Tab5 to broker | JSON, sent when asked, after every (re)connect and whenever a module is plugged in or out: `t fw caps`. `fw` is the firmware build time; `caps` lists the modules this Tab5 has right now: `imu power screen mic sleep` always, and `joystick` only while a unit answers on Port A |
+| `tab5/joy` | Tab5 to broker | JSON, 25/s awake, 2/s asleep, and at once when the unit is plugged in or out: `t ts ok x y rx ry b fx fy sw`. `ok` is 1 when a unit is connected; `x`, `y` are -100.0 to +100.0 (percent of a full push, after the orientation switches); `rx`, `ry` are the unit's calibrated -4095 to +4095; `b` is 1 while the stick is pressed; `fx fy sw` are the orientation switches |
+| `tab5/caps` | Tab5 to broker | JSON, sent when asked, after every (re)connect and whenever a module is plugged in or out: `t ts fw ntp caps` and, with a card, `sdmb`. `fw` is the firmware build time; `ntp` is the time server in use; `caps` lists what this Tab5 has right now: `imu power screen mic sleep` always, `joystick` only while a unit answers on Port A, and `sdcard` only while a microSD card is mounted (`sdmb` is its size in MB) |
+| `tab5/stats` | Tab5 to broker | JSON every 5 s awake and 30 s asleep: `t ts up mhz l0 l1 tasks ram ps sd`. `up` is seconds since boot; `l0` and `l1` are the load of core 0 (display) and core 1 (sensors, MQTT) in percent, from the FreeRTOS run-time counters, -1 if unknown; `ram` is `free tot min big` in bytes for internal RAM (`min` is the lowest free since boot, `big` the largest free block); `ps` is `free tot` for PSRAM; `sd` is `on mb used` (card size and space used, in MB) |
+| `tab5/info` | Tab5 to broker | JSON, retained, sent on every connect and whenever a module comes or goes: `t ts chip rev cores idf fw flash periph`. `flash` has `size`, the firmware size `app` and the free space in its slot `free`, `nvs` as `[used, total]` entries, and `parts` (name and size of every partition). `periph` lists the peripherals, each with `n` name, `d` detail and `ok`; the SD card and the joystick are listed only while present |
 | `tab5/cmd` | broker to Tab5 | Text commands, below |
 
 Commands:
@@ -152,7 +160,7 @@ tools/.venv/bin/python tools/powerbench.py --cpus 180,90,40     # real sleep mod
 - Tried on the device: the setup page's refusals (a non-key, a non-certificate, a non-text file, a key that does not belong to the certificate, a certificate from another CA), a 4.8 KB certificate bundle pasted (accepted) and a 12 KB one (refused as too large), the PIN lockout (five wrong PINs, the countdown, a retry after the wait locks again, the right PIN opens setup), and settings with a wrong Wi-Fi password (setup reopens behind the PIN after about 90 s with the reason, and recovers once the right password is saved).
 - Checked only by reading the code: the "broker refused the login" and "could not reach the broker" messages (the Wi-Fi one was seen), and that the PIN lock survives a restart (while the failure count is 5 or more, every restart locks the keypad for a minute until one right PIN resets it).
 - Not tested: Android's captive-portal check on the setup network (there was no Android phone; the Tab5 redirects every unknown address to the setup page, which is the standard signal), and the erase-and-reflash recovery for a forgotten PIN.
-- Known limit: the Tab5 waits for the clock (NTP) before it tries the broker, so on a network without internet a failed first connection would be reported as "could not reach the broker".
+- Known limit: the Tab5 waits for the clock (NTP) before it tries the broker, so on a network without internet a failed first connection would be reported as "could not reach the broker". Setting a time server on your own network in first-run setup avoids this.
 - Certificate sign-in is built and was tried end to end (the Tab5 connects on 8884 and the broker records it as `tab5-device`), but there is no way yet to revoke a single device certificate other than replacing the CA.
 
 `spike/spike.cpp` is the throwaway firmware that first confirmed the access point, captive page, form posts and touch work on this hardware. Build it with `pio run -e spike -t upload`; a plain `pio run` still builds the real firmware.
