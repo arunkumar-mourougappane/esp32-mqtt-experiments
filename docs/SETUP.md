@@ -182,6 +182,7 @@ After the restart the Tab5 joins your Wi-Fi and the broker, and the dashboard ap
 - **Wi-Fi symbol**: arcs light up with signal strength (three green at -60 dBm or better, two green to -70, one amber to -80, one red below). While joining they sweep in amber.
 - **Broker symbol**: a two-unit server, green when connected. While connecting it is amber with the dots blinking in turn.
 - **`N msg/s >>> host:port`**: the arrows sweep while the link is up.
+- **Time, top right**: HH:MM in UTC, or `--:--` until the Tab5's clock is set.
 - **SD card symbol**: a small green card shows while a microSD card is mounted. It appears a few seconds after you insert one and disappears when you pull it out.
 
 **If the saved settings do not work**, the Tab5 reopens setup by itself and shows the reason, for example "The broker refused the login". It does so if it cannot join the Wi-Fi within 90 s or reach the broker within 150 s. Setup then opens behind the PIN keypad; enter your PIN, fix the value and save again.

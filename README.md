@@ -44,6 +44,7 @@ The dashboard shows a g-force scope, gyro rate dials, a linear-acceleration hist
 - **Wi-Fi symbol**: arcs light up with signal strength (three green at -60 dBm or better, two green to -70, one amber to -80, one red below). While joining, the arcs sweep in amber; after 30 s down they sweep in red with a slash.
 - **Broker symbol**: a two-unit server. Green when connected, with the lower dot flickering as messages go out. While connecting it is amber with the dots blinking in turn; after 30 s it is red with a slash.
 - **`N msg/s >>> host:port`**: the arrows sweep while the link is up and stay red and still when it is down.
+- **Time**: the top right corner shows the time of day as HH:MM in UTC, or `--:--` until the clock is set. (It replaced the frame rate, which is still printed on the serial port.)
 
 ### Quick settings
 

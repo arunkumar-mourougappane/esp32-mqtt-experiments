@@ -487,7 +487,7 @@ static void drawSdGlyph(int x, int y, uint16_t c) {
   for (int k = 0; k < 3; k++) g.fillRect(x + 4 + k * 4, y + 4, 2, 7, c);
 }
 
-static void drawHeader(int fps, int rssi, const char *title, bool joyOn) {
+static void drawHeader(int rssi, const char *title, bool joyOn) {
   g.fillRect(0, 0, SCR_W, 76, C_PANEL);
   g.setTextSize(3); g.setTextColor(C_TXT);
   g.drawString(title, 16, 10);
@@ -516,8 +516,13 @@ static void drawHeader(int fps, int rssi, const char *title, bool joyOn) {
   x += 3 * 14 + 8;
   snprintf(b, sizeof b, "%s:%d", cfg.host.c_str(), (int)cfg.port);
   g.drawString(b, x, 46);
-  snprintf(b, sizeof b, "%d fps", fps);
-  g.drawString(b, SCR_W - 100, 14);
+  // The time of day in UTC, HH:MM, top right where the frame rate used to be. It shows "--:--" until the clock is set.
+  const time_t nowT = time(nullptr);
+  snprintf(b, sizeof b, "--:--");
+  if (nowT > 1700000000) { struct tm lt; gmtime_r(&nowT, &lt); snprintf(b, sizeof b, "%02d:%02d", lt.tm_hour, lt.tm_min); }
+  g.setTextSize(3); g.setTextColor(C_TXT);
+  g.drawString(b, SCR_W - 16 - 5 * 18, 10);               // 5 characters of 18 px at text size 3
+  g.setTextSize(2);
   if (micOn) { g.fillCircle(SCR_W - 60, 56, 9, C_X); g.setTextColor(C_X); g.drawString("MIC", SCR_W - 44, 48); }
 }
 
@@ -844,7 +849,7 @@ static void freezeDashboard() {
   Serial.printf("panel: dashboard frozen in %u ms\n", (unsigned)(millis() - t0));
 }
 
-static void draw(const Snap &s, int fps) {
+static void draw(const Snap &s) {
   if (page == 1 && !joyPresent) page = 0;          // the joystick was unplugged: back to the dashboard
   const int gap = 8, y1 = 84, h1 = 500;
   const int y2 = y1 + h1 + gap, h2 = 232;
@@ -858,7 +863,7 @@ static void draw(const Snap &s, int fps) {
     pollTouch();                                 // between strips: keeps touch responsive at ~13 fps
     g.oy = y;
     canvas.fillSprite(C_BG);
-    drawHeader(fps, s.pw.rssi, page ? "Joystick" : "Tab5 IMU", s.joy.present);
+    drawHeader(s.pw.rssi, page ? "Joystick" : "Tab5 IMU", s.joy.present);
     if (page == 0) {
       drawScope(s, y1, h1);
       drawDials(s, y2, h2);
@@ -908,7 +913,7 @@ static void drawTask(void *) {
     memcpy(&snap, &live, sizeof snap);
     xSemaphoreGive(mtx);
 
-    draw(snap, fps);
+    draw(snap);
 
     frames++;
     uint32_t now = millis();
